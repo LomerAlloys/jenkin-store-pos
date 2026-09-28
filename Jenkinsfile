@@ -60,10 +60,10 @@ pipeline {
             echo "✗ Failed at stage: ${env.STAGE_NAME}"
         }
         // ทำงานเสมอไม่ว่าจะ success หรือ failure เพื่อเก็บ log ไฟล์ debug ถ้ามี
-        always {
-            node('linux-build') {
-                archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
-            }
-        }
+        // always {
+        //     node('linux-build') {
+        //         archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
+        //     }
+        // }
     }
 }
