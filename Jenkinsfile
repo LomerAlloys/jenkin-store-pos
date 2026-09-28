@@ -1,8 +1,9 @@
 pipeline {
-    // กำหนดให้รัน Pipeline ภายในคอนเทนเนอร์ Node 20 Alpine บนโหนด linux-build
+    // กำหนดให้รัน Pipeline ภายในคอนเทนเนอร์ Node 22 Alpine บนโหนด linux-build
+    // node:22 เพราะ package.json กำหนด "engines": { "node": ">=22" }
     agent {
         docker {
-            image 'node:20-alpine'
+            image 'node:22-alpine'
             label 'linux-build'
         }
     }
@@ -25,8 +26,10 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
-                    sh 'npm install --package-lock-only --legacy-peer-deps --no-audit'
-                    sh 'npm ci --legacy-peer-deps'
+                    // Project uses pnpm (packageManager: pnpm@10.34.5) with pnpm-lock.yaml
+                    // Enable corepack so the pinned pnpm version is used without a separate install step
+                    sh 'corepack enable'
+                    sh 'pnpm install --frozen-lockfile'
                 }
             }
         }
@@ -35,7 +38,7 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Running Linter for ${env.APP_NAME} ==="
-                    sh 'npm run lint'
+                    sh 'pnpm run lint'
                 }
             }
         }
@@ -44,7 +47,7 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Running Unit Tests for ${env.APP_NAME} ==="
-                    sh 'npm test'
+                    sh 'pnpm test'
                 }
             }
         }
