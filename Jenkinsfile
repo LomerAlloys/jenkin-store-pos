@@ -28,7 +28,7 @@ pipeline {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
                     // Project uses pnpm (packageManager: pnpm@10.34.5) with pnpm-lock.yaml
                     // Enable corepack so the pinned pnpm version is used without a separate install step
-                    sh 'corepack enable'
+                    // sh 'corepack enable'
                     sh 'pnpm install --frozen-lockfile'
                 }
             }
