@@ -17,6 +17,10 @@ function extractImageLines(path: string): string[] {
 }
 
 describe('compose files pin every external image to a digest (#401)', () => {
+  it('deliberately fail for lab 03 red build', () => {
+    expect(true).toBe(false);
+  });
+
   it.each([
     ['server/docker-compose.yml', join(__dirname, '..', 'docker-compose.yml')],
     ['deploy/compose/monitoring.yml', join(__dirname, '..', '..', 'deploy', 'compose', 'monitoring.yml')],
