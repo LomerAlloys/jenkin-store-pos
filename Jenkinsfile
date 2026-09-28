@@ -61,7 +61,9 @@ pipeline {
         }
         // ทำงานเสมอไม่ว่าจะ success หรือ failure เพื่อเก็บ log ไฟล์ debug ถ้ามี
         always {
-            archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
+            node('linux-build') {
+                archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
+            }
         }
     }
 }

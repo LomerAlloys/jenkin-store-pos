@@ -17,6 +17,9 @@ const TENANT = '14414414-4444-4144-8144-144144144144';
 const PASSWORD = 'device-flow-144';
 
 describe('devices: enrol and retire (e2e)', () => {
+  it('deliberately fail for lab 03 red build', () => {
+    expect(true).toBe(false);
+  });
   let app: INestApplication;
   let admin: DataSource;
   let cache: import('ioredis').Redis;
