@@ -5,6 +5,7 @@ pipeline {
         docker {
             image 'node:22-alpine'
             label 'linux-build'
+            args '-u root'
         }
     }
 
