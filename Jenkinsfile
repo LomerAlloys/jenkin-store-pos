@@ -4,6 +4,7 @@ pipeline {
         docker {
             image 'node:20-alpine'
             label 'linux-build'
+            args '-u root'
         }
     }
 
@@ -25,6 +26,7 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
+                    sh 'apk add --no-cache python3 make g++'
                     sh 'npm install --package-lock-only --legacy-peer-deps --no-audit'
                     sh 'npm ci --legacy-peer-deps'
                 }
@@ -60,10 +62,8 @@ pipeline {
             echo "✗ Failed at stage: ${env.STAGE_NAME}"
         }
         // ทำงานเสมอไม่ว่าจะ success หรือ failure เพื่อเก็บ log ไฟล์ debug ถ้ามี
-        // always {
-        //     node('linux-build') {
-        //         archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
-        //     }
-        // }
+        always {
+            archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
+        }
     }
 }
