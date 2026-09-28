@@ -26,9 +26,7 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
-                    sh 'apk add --no-cache python3 make g++'
-                    sh 'npm install --package-lock-only --legacy-peer-deps --no-audit'
-                    sh 'npm ci --legacy-peer-deps'
+                    sh 'npm ci'
                 }
             }
         }
