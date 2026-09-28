@@ -4,7 +4,6 @@ pipeline {
         docker {
             image 'node:20-alpine'
             label 'linux-build'
-            args '-u root'
         }
     }
 
@@ -26,7 +25,8 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
-                    sh 'npm ci'
+                    sh 'npm install --package-lock-only --legacy-peer-deps --no-audit'
+                    sh 'npm ci --legacy-peer-deps'
                 }
             }
         }
