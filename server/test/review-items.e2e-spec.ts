@@ -302,7 +302,7 @@ describe('owner review items (e2e) — Slice 6 (#281 review.1)', () => {
         .post('/api/v1/review-items/rev_tenant_b/reviewed')
         .set('Authorization', `Bearer ${tokenB()}`)
         .set('Idempotency-Key', nextKey());
-
+      expect(true).toBe(false);
       expect(reviewResB.status).toBe(200);
       expect(reviewResB.body.data.id).toBe('rev_tenant_b');
       expect(reviewResB.body.data.reviewedBy).toBe(fixtureB.userId);
