@@ -26,11 +26,10 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
-                    // Project uses pnpm (packageManager: pnpm@10.34.5) with pnpm-lock.yaml.
-                    // Use npx to run the pinned pnpm version without corepack, because
-                    // corepack enable writes symlinks to /usr/local/bin which requires root,
-                    // but Docker Pipeline runs containers as the Jenkins UID (non-root).
-                    sh 'npx --yes pnpm@10.34.5 install --frozen-lockfile'
+                    // Project uses pnpm (packageManager: pnpm@10.34.5) with pnpm-lock.yaml
+                    // Enable corepack so the pinned pnpm version is used without a separate install step
+                    sh 'corepack enable'
+                    sh 'pnpm install --frozen-lockfile'
                 }
             }
         }
@@ -39,7 +38,7 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Running Linter for ${env.APP_NAME} ==="
-                    sh 'npx --yes pnpm@10.34.5 run lint'
+                    sh 'pnpm run lint'
                 }
             }
         }
@@ -48,7 +47,7 @@ pipeline {
             steps {
                 dir('server') {
                     echo "=== Running Unit Tests for ${env.APP_NAME} ==="
-                    sh 'npx --yes pnpm@10.34.5 test'
+                    sh 'pnpm test'
                 }
             }
         }
