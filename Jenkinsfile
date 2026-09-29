@@ -53,6 +53,23 @@ pipeline {
             }
         }
 
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    // รัน sonar-scanner ผ่าน npx
+                    sh 'npx sonarqube-scanner -Dsonar.projectKey=taskflow-api'
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
         stage('Deploy - Staging') {
             when {
                 branch 'develop'
@@ -79,6 +96,16 @@ pipeline {
     }
 
     post {
+        always {
+            // Publish JUnit XML
+            junit allowEmptyResults: true, testResults: 'server/reports/junit.xml'
+            
+            // Publish Cobertura Coverage
+            publishCoverage adapters: [coberturaAdapter('server/coverage/cobertura-coverage.xml')]
+            
+            archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
+        }
+
         // เมื่อทุก stage ทำงานสำเร็จครบถ้วน
         success {
             echo "✓ ${env.APP_NAME} passed on ${env.NODE_ENV}"
