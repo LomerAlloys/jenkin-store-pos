@@ -113,16 +113,16 @@ pipeline {
         }
 
         stage('E2E Test') {
-            agent {
-                docker {
-                    image 'mcr.microsoft.com/playwright:v1.49.0-noble'
-                    label 'linux-build'
-                    args '-u root --network jenkins-net'
-                }
-            }
+            // agent {
+            //     docker {
+            //         image 'mcr.microsoft.com/playwright:v1.49.0-noble'
+            //         label 'linux-build'
+            //         args '-u root --network jenkins-net'
+            //     }
+            // }
             steps {
                 dir('e2e') {
-                    sh 'npm ci'
+                    // sh 'npm ci'
                     sh 'npx playwright test'
                 }
             }
