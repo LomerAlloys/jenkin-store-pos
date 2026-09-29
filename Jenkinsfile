@@ -5,7 +5,9 @@ pipeline {
         docker {
             image 'node:22-alpine'
             label 'linux-build'
-            args '-u root'
+            // -u root: รันเป็น root เพื่อให้ corepack/pnpm ทำงานได้
+            // --network jenkins-net: ให้ container เข้าถึง sonarqube:9000 ผ่าน Docker network ได้
+            args '-u root --network jenkins-net'
         }
     }
 
