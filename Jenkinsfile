@@ -122,7 +122,9 @@ pipeline {
             // }
             steps {
                 dir('e2e') {
-                    // sh 'npm ci'
+                    // npm install: ติดตั้ง @playwright/test ก่อนรัน test
+                    // ใช้ npm install (ไม่ใช่ npm ci) เพราะยังไม่มี package-lock.json
+                    sh 'npm install'
                     sh 'npx playwright test'
                 }
             }
