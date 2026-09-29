@@ -111,6 +111,36 @@ pipeline {
                 sh 'echo deploying to production ...'
             }
         }
+
+        stage('E2E Test') {
+            agent {
+                docker {
+                    image 'mcr.microsoft.com/playwright:v1.49.0-noble'
+                    label 'linux-build'
+                    args '-u root --network jenkins-net'
+                }
+            }
+            steps {
+                dir('e2e') {
+                    sh 'npm install'
+                    sh 'npx playwright test'
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'e2e/reports/e2e-junit.xml'
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'e2e/playwright-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Playwright E2E Report'
+                    ])
+                }
+            }
+        }
+
     }
 
     post {
