@@ -7,6 +7,16 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.e2e-spec.ts'],
+
+    reporters: ['default', 'junit'],
+    outputFile: {
+      junit: './reports/junit.xml',
+    },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'cobertura', 'lcov'],
+      reportsDirectory: './coverage',
+    },
     // #141: one run per Postgres. Takes a session advisory lock before any file starts
     // and refuses to start, naming the holder, if another `pnpm test:e2e` has it.
     // #160: warns when this Node has the Windows libuv bug that kills a worker at random.
