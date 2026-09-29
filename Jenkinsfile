@@ -96,15 +96,7 @@ pipeline {
     }
 
     post {
-        always {
-            // Publish JUnit XML
-            junit allowEmptyResults: true, testResults: 'server/reports/junit.xml'
-            
-            // Publish Cobertura Coverage
-            publishCoverage adapters: [coberturaAdapter('server/coverage/cobertura-coverage.xml')]
-            
-            archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
-        }
+        
 
         // เมื่อทุก stage ทำงานสำเร็จครบถ้วน
         success {
@@ -114,8 +106,13 @@ pipeline {
         failure {
             echo "✗ Failed at stage: ${env.STAGE_NAME}"
         }
-        // ทำงานเสมอไม่ว่าจะ success หรือ failure เพื่อเก็บ log ไฟล์ debug ถ้ามี
         always {
+            // Publish JUnit XML
+            junit allowEmptyResults: true, testResults: 'server/reports/junit.xml'
+            
+            // Publish Cobertura Coverage
+            publishCoverage adapters: [coberturaAdapter('server/coverage/cobertura-coverage.xml')]
+            
             archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
         }
     }
