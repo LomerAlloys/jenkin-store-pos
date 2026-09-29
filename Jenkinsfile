@@ -122,7 +122,7 @@ pipeline {
             }
             steps {
                 dir('e2e') {
-                    sh 'npm install'
+                    sh 'npm ci'
                     sh 'npx playwright test'
                 }
             }
