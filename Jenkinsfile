@@ -51,6 +51,13 @@ pipeline {
                     sh 'pnpm test'
                 }
             }
+            post {
+                always {
+                    // ต้องรันภายใน stage post เพื่อให้ FilePath context (workspace) ยังคงอยู่
+                    junit allowEmptyResults: true, testResults: 'server/reports/junit.xml'
+                    publishCoverage adapters: [coberturaAdapter('server/coverage/cobertura-coverage.xml')]
+                }
+            }
         }
 
         stage('SonarQube Analysis') {
@@ -96,8 +103,6 @@ pipeline {
     }
 
     post {
-        
-
         // เมื่อทุก stage ทำงานสำเร็จครบถ้วน
         success {
             echo "✓ ${env.APP_NAME} passed on ${env.NODE_ENV}"
@@ -107,12 +112,8 @@ pipeline {
             echo "✗ Failed at stage: ${env.STAGE_NAME}"
         }
         always {
-            // Publish JUnit XML
-            junit allowEmptyResults: true, testResults: 'server/reports/junit.xml'
-            
-            // Publish Cobertura Coverage
-            publishCoverage adapters: [coberturaAdapter('server/coverage/cobertura-coverage.xml')]
-            
+            // archiveArtifacts ยังสามารถรันบน top-level post ได้
+            // แต่ junit / publishCoverage ถูกย้ายไปอยู่ใน stage('Unit Test').post.always แล้ว
             archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
         }
     }
