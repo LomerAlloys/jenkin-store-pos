@@ -42,6 +42,13 @@ pipeline {
                     sh 'pnpm run lint'
                 }
             }
+            post {
+                always {
+                    // archiveArtifacts ต้องอยู่ใน stage-level post เพราะต้องการ FilePath context
+                    // pipeline-level post ไม่มี workspace เมื่อใช้ Docker agent
+                    archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
+                }
+            }
         }
 
         stage('Unit Test') {
@@ -105,16 +112,14 @@ pipeline {
     post {
         // เมื่อทุก stage ทำงานสำเร็จครบถ้วน
         success {
-            echo "✓ ${env.APP_NAME} passed on ${env.NODE_ENV}"
+            echo "✓ ${env.APP_NAME} pipeline passed!"
         }
         // เมื่อมี stage ใด stage หนึ่งล้มเหลว จะแสดงชื่อ stage ที่พัง
         failure {
-            echo "✗ Failed at stage: ${env.STAGE_NAME}"
+            echo "✗ Pipeline failed. Check stage logs above."
         }
-        always {
-            // archiveArtifacts ยังสามารถรันบน top-level post ได้
-            // แต่ junit / publishCoverage ถูกย้ายไปอยู่ใน stage('Unit Test').post.always แล้ว
-            archiveArtifacts artifacts: 'server/npm-debug.log*,npm-debug.log*', allowEmptyArchive: true
-        }
+        // หมายเหตุ: ไม่ใส่ archiveArtifacts / junit / publishCoverage ที่นี่
+        // เพราะ pipeline-level post ไม่มี workspace (FilePath) เมื่อใช้ Docker agent
+        // ให้ใช้ stage-level post { always } แทน
     }
 }
