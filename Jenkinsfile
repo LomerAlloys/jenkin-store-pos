@@ -3,7 +3,9 @@ pipeline {
     // node:22 เพราะ package.json กำหนด "engines": { "node": ">=22" }
     agent {
         docker {
-            image 'node:22-alpine'
+            // node:22 (Debian bookworm) ใช้ glibc ซึ่ง sonar-scanner JRE ต้องการ
+            // node:22-alpine ใช้ musl libc → sonar-scanner bundled JRE รันไม่ได้ ("java: not found")
+            image 'node:22'
             label 'linux-build'
             // -u root: รันเป็น root เพื่อให้ corepack/pnpm ทำงานได้
             // --network jenkins-net: ให้ container เข้าถึง sonarqube:9000 ผ่าน Docker network ได้
