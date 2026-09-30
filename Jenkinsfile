@@ -54,7 +54,6 @@ pipeline {
                     . .venv/bin/activate
 
                     pip install --upgrade pip
-                    pip install -r requirements.txt
                 '''
             }
         }
@@ -90,7 +89,13 @@ pipeline {
         stage('SAST') {
             steps {
                 // Install Semgrep
-                sh 'pip3 install semgrep --quiet || apt-get install -y python3-pip -qq && pip3 install semgrep --quiet'
+                sh '''
+                    command -v semgrep >/dev/null 2>&1 || {
+                        apt-get update -qq && apt-get install -y -qq python3-pip
+                        pip3 install --break-system-packages semgrep --quiet
+                    }
+                    semgrep --version
+                '''
 
                 dir('server') {
                     // ESLint with security plugin — output as SARIF
@@ -125,20 +130,27 @@ pipeline {
 
         stage('SCA — npm audit') {
             steps {
-                dir('server') {
-                    script {
+                script {
+                    sh 'apt-get install -y -qq jq'
+
+                    dir('server') {
                         sh 'npm audit --audit-level=high --json > ../audit.json || true'
-
-                        def critical = sh(
-                            script: "jq '.metadata.vulnerabilities.critical' ../audit.json",
-                            returnStdout: true
-                        ).trim().toInteger()
-
-                        if (critical > 0) {
-                            error("🚨 Blocking: ${critical} critical vulnerabilities found — fix before merging!")
-                        }
-                        echo "✅ SCA passed with 0 critical vulnerabilities (warnings allowed)"
                     }
+
+                    // Use jq "// 0" fallback so missing field returns 0 instead of literal "null".
+                    // npm v6: .metadata.vulnerabilities.critical  |  npm v7+: same path but may be absent.
+                    def rawCritical = sh(
+                        script: "jq '.metadata.vulnerabilities.critical // 0' audit.json",
+                        returnStdout: true
+                    ).trim()
+
+                    def critical = rawCritical.isInteger() ? rawCritical.toInteger() : 0
+                    echo "Critical vulnerabilities found: ${critical}"
+
+                    if (critical > 0) {
+                        error("🚨 Blocking: ${critical} critical vulnerabilities found — fix before merging!")
+                    }
+                    echo "✅ SCA passed with 0 critical vulnerabilities (warnings allowed)"
                 }
             }
             post {
@@ -173,7 +185,7 @@ pipeline {
                 // Sign with Cosign using the injected private key
                 withCredentials([file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')]) {
                     sh '''
-                        COSIGN_PASSWORD="" cosign sign-blob \
+                        COSIGN_PASSWORD="cosign-key" \
                         --key "$COSIGN_KEY" \
                         --output-signature taskflow-api.cdx.json.sig \
                         taskflow-api.cdx.json
