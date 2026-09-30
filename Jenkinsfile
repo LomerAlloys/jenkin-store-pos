@@ -1,23 +1,16 @@
 pipeline {
-    // กำหนดให้รัน Pipeline ภายในคอนเทนเนอร์ Node 22 Alpine บนโหนด linux-build
-    // node:22 เพราะ package.json กำหนด "engines": { "node": ">=22" }
+    // ให้ Jenkins อยู่บน linux-build โดยตรง แล้วค่อยสร้าง Docker agent แยกตาม stage
+    // เพื่อให้คำสั่ง docker ถูกเรียกจาก jenkins-agent ที่มี Docker CLI อยู่แล้ว
     agent {
-        docker {
-            // node:22 (Debian bookworm) ใช้ glibc ซึ่ง sonar-scanner JRE ต้องการ
-            // node:22-alpine ใช้ musl libc → sonar-scanner bundled JRE รันไม่ได้ ("java: not found")
-            image 'node:22'
-            label 'linux-build'
-            // -u root: รันเป็น root เพื่อให้ corepack/pnpm ทำงานได้
-            // --network jenkins-net: ให้ container เข้าถึง sonarqube:9000 ผ่าน Docker network ได้
-            // -v docker.sock: DooD สำหรับ E2E stage (docker compose up api-1)
-            args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock'
-        }
+        label 'linux-build'
     }
 
     // กำหนดค่า Environment Variables สำหรับใช้ทั้ง Pipeline
     environment {
         APP_NAME = 'taskflow-api'
         NODE_ENV = 'test'
+        // Jenkins node เคยได้รับ PATH ว่าง ทำให้ Docker Pipeline หา /usr/bin/docker ไม่เจอ
+        PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
     }
 
     options {
@@ -29,6 +22,14 @@ pipeline {
 
     stages {
         stage('Install') {
+            agent {
+                docker {
+                    image 'node:22'
+                    label 'linux-build'
+                    reuseNode true
+                    args '-u root --network jenkins-net'
+                }
+            }
             steps {
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
@@ -41,6 +42,14 @@ pipeline {
         }
 
         stage('Lint') {
+            agent {
+                docker {
+                    image 'node:22'
+                    label 'linux-build'
+                    reuseNode true
+                    args '-u root --network jenkins-net'
+                }
+            }
             steps {
                 dir('server') {
                     echo "=== Running Linter for ${env.APP_NAME} ==="
@@ -57,6 +66,14 @@ pipeline {
         }
 
         stage('Unit Test') {
+            agent {
+                docker {
+                    image 'node:22'
+                    label 'linux-build'
+                    reuseNode true
+                    args '-u root --network jenkins-net'
+                }
+            }
             steps {
                 dir('server') {
                     echo "=== Running Unit Tests for ${env.APP_NAME} ==="
@@ -73,6 +90,15 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
+            agent {
+                docker {
+                    // Debian/glibc is required by sonar-scanner's bundled JRE.
+                    image 'node:22'
+                    label 'linux-build'
+                    reuseNode true
+                    args '-u root --network jenkins-net'
+                }
+            }
             steps {
                 withSonarQubeEnv('SonarQube') {
                     // รัน sonar-scanner ผ่าน npx
@@ -114,48 +140,33 @@ pipeline {
         }
 
         stage('E2E Test') {
-            // NOTE: ไม่ใช้ stage-level Docker agent เพราะ jenkins-agent มี PATH=""
-            // ทำให้ docker: not found ก่อน spawn Playwright container ได้
-            // รัน Playwright ใน top-level node:22 container แทน
-            // - E2E specs ทั้ง 3 ใช้ request context เท่านั้น (ไม่ต้องการ browser)
-            // - docker compose รันผ่าน DooD (docker.sock mount จาก top-level agent args)
+            agent {
+                docker {
+                    // Keep the image version aligned with e2e/package-lock.json.
+                    image 'mcr.microsoft.com/playwright:v1.63.0-noble'
+                    label 'linux-build'
+                    reuseNode true
+                    // DooD: ใช้ Docker daemon ของ host โดยไม่สร้าง Docker daemon ซ้อนใน container
+                    args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
             environment {
-                // api-1 จะอยู่บน compose network ชื่อ srisurart-pos_default
-                // ถ้า node:22 container ไม่ได้อยู่ network เดียวกัน ให้ชี้ไปที่ localhost
-                // ที่ port ที่ docker-compose.ci.yml publish ไว้
-                API_BASE_URL = 'http://localhost:3000'
+                API_BASE_URL = 'http://api-1:3000'
             }
             steps {
-                // Step 1: ติดตั้ง docker CLI + Compose V2
-                // docker-compose-plugin ไม่มีใน Debian default repos
-                // ดาวน์โหลด compose V2 binary จาก GitHub แล้ว register เป็น docker CLI plugin
+                // Playwright image มี browser/Node แต่ไม่มี Docker CLI จึงติดตั้งเฉพาะ client
                 sh '''
-                    if ! which docker > /dev/null 2>&1; then
-                        apt-get update -qq
-                        apt-get install -y -qq docker.io curl
-                    fi
-                    if ! docker compose version > /dev/null 2>&1; then
-                        mkdir -p /usr/lib/docker/cli-plugins
-                        curl -fsSL \
-                            https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-x86_64 \
-                            -o /usr/lib/docker/cli-plugins/docker-compose
-                        chmod +x /usr/lib/docker/cli-plugins/docker-compose
-                    fi
+                    apt-get update -qq
+                    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2
                     echo "=== Docker & Compose versions ==="
                     docker --version
                     docker compose version
                 '''
 
-                // Step 2: Start datastores + API ด้วย docker compose (DooD via docker.sock)
+                // Start the API stack through the mounted host Docker socket.
                 dir('server') {
                     sh '''
                         cp -n .env.example .env 2>/dev/null || true
-                        docker compose \
-                            -f docker-compose.yml \
-                            -f docker-compose.ci.yml \
-                            up -d --wait \
-                            postgres redis-cache redis-queue
-                        echo "=== Datastores ready ==="
                         docker compose \
                             -f docker-compose.yml \
                             -f docker-compose.ci.yml \
@@ -164,15 +175,20 @@ pipeline {
                     '''
                 }
 
-                // Step 3: รัน Playwright E2E specs (3 specs: health, create-task, mark-done)
+                // Compose creates its network after this stage container has started.
+                // Attach the Playwright runner so api-1 resolves through Docker DNS.
+                sh 'docker network connect srisurart-pos_default "$HOSTNAME"'
+
                 dir('e2e') {
                     sh 'npm ci'
-                    sh 'npx playwright test --reporter=list,junit,html'
+                    // Use playwright.config.ts so JUnit/HTML reports keep their configured paths.
+                    sh 'npx playwright test'
                 }
             }
             post {
                 always {
-                    // Cleanup: หยุด API stack
+                    // Disconnect first so Compose can remove its network cleanly.
+                    sh 'docker network disconnect srisurart-pos_default "$HOSTNAME" || true'
                     dir('server') {
                         sh 'docker compose -f docker-compose.yml -f docker-compose.ci.yml down --remove-orphans || true'
                     }
