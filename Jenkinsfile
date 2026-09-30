@@ -116,16 +116,6 @@ pipeline {
         }
 
         stage('E2E Test') {
-            agent {
-                docker {
-                    // Keep the image version aligned with e2e/package-lock.json.
-                    image 'mcr.microsoft.com/playwright:v1.63.0-noble'
-                    label 'linux-build'
-                    reuseNode true
-                    // DooD: ใช้ Docker daemon ของ host โดยไม่สร้าง Docker daemon ซ้อนใน container
-                    args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock'
-                }
-            }
             environment {
                 API_BASE_URL = 'http://api-1:3000'
             }
