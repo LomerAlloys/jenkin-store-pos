@@ -56,6 +56,7 @@ pipeline {
                     # Scan full git history — exit 0 so we can archive the report first
                     gitleaks detect \
                     --source . \
+                    --config .gitleaks.toml \
                     --report-format json \
                     --report-path gitleaks-report.json \
                     --no-git false \
