@@ -1,0 +1,25 @@
+# Lab 10 - caches for CI pods in namespace jenkins-agents.
+# kind's default StorageClass "standard" (local-path) creates each one as a folder on the
+# kind node the first time a pod mounts it (STATUS stays "Pending" until then, that's normal).
+# ReadWriteOnce still lets several pods use it, as long as they're on the same node (kind has one).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ci-tools            # API pipeline: tool binaries, Python venvs, Trivy DB
+  namespace: jenkins-agents
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 3Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flutter-cache       # mobile pipeline: pub cache, Gradle home, osv-scanner
+  namespace: jenkins-agents
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 15Gi
