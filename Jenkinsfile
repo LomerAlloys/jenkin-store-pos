@@ -41,21 +41,6 @@ pipeline {
                     // Enable corepack so the pinned pnpm version is used without a separate install step
                     sh 'corepack enable'
                     sh 'pnpm install --frozen-lockfile'
-                    sh '''
-                        # Check if pip can be loaded via Python module
-                        if ! command -v pip3 &> /dev/null; then
-                            echo "pip3 not found, attempting ensurepip..."
-                            python3 -m ensurepip --upgrade || {
-                                echo "ensurepip unavailable, downloading get-pip.py..."
-                                curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-                                python3 get-pip.py --user
-                                export PATH="$HOME/.local/bin:$PATH"
-                            }
-                        fi
-
-                        # Use python3 -m pip to avoid binary path issues
-                        python3 -m pip install --user -r requirements.txt
-                    '''
                 }
             }
         }
@@ -73,7 +58,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Secrets Detection') {
             steps {
                 sh '''
