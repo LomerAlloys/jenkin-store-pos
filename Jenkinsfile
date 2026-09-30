@@ -217,14 +217,22 @@ pipeline {
                         opa eval \
                         --data policy/security.rego \
                         --input audit.json \
-                        --format pretty \
+                        --format json \
                         "data.security.deny" \
-                        > opa-result.txt 2>&1
+                        > opa-result.json 2>&1
+                        cat opa-result.json
+                        # Extract just the deny array value ([] = no denials, ["msg",...] = blocked)
+                        jq -r '
+                          if .result == null or (.result | length) == 0
+                          then "[]"
+                          else (.result[0].expressions[0].value | @json)
+                          end
+                        ' opa-result.json > opa-result.txt
                         cat opa-result.txt
                     '''
 
                     def result = readFile('opa-result.txt').trim()
-                    // OPA returns [] when no denials, or ["msg1",...] when denied
+                    // [] means no denials (pass). Anything else is a denial message array.
                     if (result != '[]') {
                         error("🚨 Policy Gate FAILED:\n${result}")
                     }
@@ -233,7 +241,7 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'opa-result.txt', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'opa-result.json, opa-result.txt', allowEmptyArchive: true
                 }
             }
         }
