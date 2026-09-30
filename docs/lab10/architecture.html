@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taskflow CI/CD Architecture (Lab 10)</title>
+<style>
+  @page { size: A4 landscape; margin: 8mm; }
+  :root {
+    --ink: #1c2330; --muted: #5b6474; --line: #c9d0db; --bg: #ffffff;
+    --step: #f3f6fa; --api: #1f5fa8; --mob: #2b8a5a; --gate: #c2410c; --gatebg: #fff4ec;
+    --par: #eef3fb; --mpar: #ecf7f1; --sys: #f7f5ef;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 9.4px/1.28 "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+  .page { width: 281mm; height: 194mm; display: flex; flex-direction: column; gap: 2.4mm; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1.5px solid var(--ink); padding-bottom: 1.2mm; }
+  h1 { margin: 0; font-size: 15px; letter-spacing: -0.2px; }
+  .flowline { font-size: 10px; font-weight: 600; color: var(--muted); }
+  .flowline b { color: var(--ink); }
+
+  .row { display: flex; align-items: stretch; gap: 0; }
+  .arrow { display: flex; align-items: center; justify-content: center; width: 4.2mm; flex: none;
+    color: #7c8594; font-size: 12px; }
+  .box { background: var(--step); border: 1px solid var(--line); border-radius: 3px; padding: 1.3mm 1.6mm;
+    display: flex; flex-direction: column; justify-content: center; }
+  .box .t { font-weight: 700; font-size: 9.6px; }
+  .box .s { color: var(--muted); font-size: 8.3px; }
+  .gate { background: var(--gatebg); border: 1px solid #f0b48f; border-left: 3px solid var(--gate); }
+  .gate .t::before { content: "◆ "; color: var(--gate); }
+  .tag { display: inline-block; font-size: 6.8px; font-weight: 700; padding: 0 1.2mm; border-radius: 6px;
+    background: #e6e9ef; color: #3b4352; margin-left: 1mm; vertical-align: 1px; white-space: nowrap; }
+  .tag.main { background: #fde2e1; color: #9f1d1d; }
+  .tag.dev { background: #fff1c2; color: #7a5a00; }
+  .tag.all { background: #e3ecfa; color: #1f4f8f; }
+
+  .trigger .box { background: #fff; }
+  .lane { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .lane .label { writing-mode: vertical-rl; transform: rotate(180deg); color: #fff; font-weight: 700;
+    font-size: 9px; padding: 1.5mm 1.2mm; text-align: center; flex: none; letter-spacing: 0.3px; }
+  .lane.api .label { background: var(--api); }
+  .lane.mob .label { background: var(--mob); }
+  .lane .body { flex: 1; padding: 2mm 2.2mm; display: flex; flex-direction: column; gap: 2mm; justify-content: space-evenly; }
+  .lane.api { flex: 1.9; } .lane.mob { flex: 0.9; }
+  .lane .row { align-items: center; }
+  .lane .row > .box { min-height: 12mm; }
+  .podnote { font-size: 8.2px; color: var(--muted); }
+  .podnote code, .s code, .sys code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 7.2px; }
+
+  .par { border: 1px dashed #8fa9cf; background: var(--par); border-radius: 4px; padding: 1.2mm; display: flex; flex-direction: column; gap: 1mm; }
+  .mob .par { border-color: #86c3a3; background: var(--mpar); }
+  .par > .ph { font-size: 7.4px; font-weight: 700; color: #3a5580; text-transform: uppercase; letter-spacing: 0.4px; }
+  .mob .par > .ph { color: #2b6b4a; }
+  .grid { display: grid; gap: 1mm; }
+  .grid .box { padding: 1.1mm 1.4mm; }
+
+  .split { display: flex; flex-direction: column; gap: 1.4mm; flex: 1; }
+  .branch { display: flex; align-items: stretch; }
+  .blabel { width: 13mm; flex: none; display: flex; align-items: center; }
+  .fail { border: 1px dashed var(--gate); background: #fff; color: var(--gate); }
+  .fail .t { color: var(--gate); }
+
+  .bottom { display: grid; grid-template-columns: 1.7fr 1fr; gap: 2.2mm; align-items: start; }
+  .systems { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.4mm; align-items: stretch; }
+  .sys { background: var(--sys); border: 1px solid #ddd6c4; border-radius: 3px; padding: 1.3mm 1.6mm; }
+  .sys .t { font-weight: 700; font-size: 9.2px; }
+  .sys .s { color: var(--muted); font-size: 8px; }
+  .panel { border: 1px solid var(--line); border-radius: 4px; padding: 1.6mm 2mm; }
+  .panel h3 { margin: 0 0 1mm; font-size: 8.4px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+  .legend { display: grid; grid-template-columns: 24mm 1fr; gap: 1.1mm 1.6mm; align-items: center; font-size: 8.2px; }
+  .sw { width: 9mm; height: 3.4mm; border-radius: 2px; }
+  table.gates { border-collapse: collapse; width: 100%; font-size: 7.3px; }
+  table.gates td { border-top: 1px solid #e3e7ee; padding: 0.45mm 1mm; vertical-align: top; }
+  table.gates td:first-child { font-weight: 700; white-space: nowrap; color: var(--gate); }
+  footer { font-size: 7.6px; color: var(--muted); display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>Taskflow CI/CD: End-to-End Pipeline Architecture (Lab 10)</h1>
+    <div class="flowline"><b>Code</b> → <b>Commit</b> → <b>Build</b> → <b>Test</b> → <b>Stage</b> → <b>Deploy</b> → <b>Monitor</b></div>
+  </header>
+
+  <!-- trigger -->
+  <div class="row trigger">
+    <div class="box" style="flex:1"><div class="t">Developer push / pull request</div><div class="s">repo <code>jenkin-store-pos</code> (monorepo: <code>server/</code> API + <code>frontend/</code> Flutter)</div></div>
+    <div class="arrow">→</div>
+    <div class="box" style="flex:1"><div class="t">GitHub webhook</div><div class="s">via ngrok → <code>/github-webhook/</code> (push, pull_request)</div></div>
+    <div class="arrow">→</div>
+    <div class="box" style="flex:1.3"><div class="t">Jenkins controller</div><div class="s">2 multibranch jobs: <code>taskflow</code> (Jenkinsfile) · <code>taskflow-mobile</code> (frontend/Jenkinsfile)</div></div>
+    <div class="arrow">→</div>
+    <div class="box" style="flex:1.3"><div class="t">Kubernetes cloud "kind" · ns <code>jenkins-agents</code></div><div class="s">one fresh pod per build, deleted when it ends · no static agents</div></div>
+  </div>
+
+  <!-- API lane -->
+  <div class="lane api">
+    <div class="label">taskflow-api · Jenkinsfile</div>
+    <div class="body">
+      <div class="podnote">Pod: <code>node:22</code> (CI tools, cached on PVC <code>ci-tools</code>) + <code>docker:27-dind</code> sidecar (image build/push) · options: timeout 45 min, parallelsAlwaysFailFast, disableConcurrentBuilds</div>
+      <div class="row">
+        <div class="par" style="flex:0.9">
+          <div class="ph">Prepare ∥</div>
+          <div class="box"><div class="t">Setup Tools</div><div class="s">pinned + sha256-verified</div></div>
+          <div class="box"><div class="t">Install</div><div class="s">pnpm install --frozen-lockfile</div></div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="par" style="flex:3.4">
+          <div class="ph">Static Checks ∥ (fail-fast)</div>
+          <div class="grid" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="box gate"><div class="t">Lint</div><div class="s">oxlint</div></div>
+            <div class="box gate"><div class="t">Unit Test</div><div class="s">vitest · JUnit + coverage</div></div>
+            <div class="box gate"><div class="t">SAST</div><div class="s">Semgrep, ERROR blocks</div></div>
+            <div class="box gate"><div class="t">SCA → Policy Gate</div><div class="s">pnpm audit → OPA rego</div></div>
+            <div class="box gate"><div class="t">Secrets Detection</div><div class="s">gitleaks, full history</div></div>
+            <div class="box"><div class="t">SBOM &amp; Sign</div><div class="s">syft CycloneDX + cosign</div></div>
+            <div class="box gate"><div class="t">IaC Scan</div><div class="s">tfsec HIGH+ · checkov</div></div>
+            <div class="box gate"><div class="t">Jenkinsfile Secret Lint</div><div class="s">no literal secrets</div></div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="box" style="flex:0.8"><div class="t">SonarQube Analysis</div><div class="s">coverage from Unit Test</div></div>
+        <div class="arrow">→</div>
+        <div class="box gate" style="flex:0.75"><div class="t">Quality Gate</div><div class="s">waitForQualityGate (5 min)</div></div>
+      </div>
+
+      <div class="row">
+        <div class="box" style="flex:0.95"><div class="t">Build Image <span class="tag all">all</span></div><div class="s">dind · tag = commit sha7, never latest</div></div>
+        <div class="arrow">→</div>
+        <div class="box gate" style="flex:1"><div class="t">Container Scan <span class="tag all">all</span></div><div class="s">Trivy HIGH/CRITICAL fixable · SARIF</div></div>
+        <div class="arrow">→</div>
+        <div class="box" style="flex:0.95"><div class="t">Push Image <span class="tag dev">develop</span><span class="tag main">main</span></div><div class="s">immutable-tag guard · kind-registry:5000</div></div>
+        <div class="arrow">→</div>
+        <div class="split" style="flex:4.6">
+          <div class="branch">
+            <div class="blabel"><span class="tag dev">develop</span></div>
+            <div class="box" style="flex:1.3"><div class="t">Deploy - Staging</div><div class="s">new image on IDLE color · live Service not switched</div></div>
+            <div class="arrow">→</div>
+            <div class="box gate" style="flex:0.8"><div class="t">Smoke test</div><div class="s">/health/live on idle color</div></div>
+            <div class="arrow">→</div>
+            <div class="box gate" style="flex:1"><div class="t">E2E - Staging</div><div class="s">Playwright API specs vs idle color</div></div>
+          </div>
+          <div class="branch">
+            <div class="blabel"><span class="tag main">main</span></div>
+            <div class="box gate" style="flex:1.05"><div class="t">Pipeline Health Gate</div><div class="s">Prometheus: last 20 builds ≥ 90 % · fails closed</div></div>
+            <div class="arrow">→</div>
+            <div class="box gate" style="flex:0.8"><div class="t">Approval</div><div class="s">input · submitter admin · 30 min</div></div>
+            <div class="arrow">→</div>
+            <div class="box" style="flex:1.15"><div class="t">Deploy - Production</div><div class="s">idle color → rollout (120 s) → smoke → switch Service</div></div>
+            <div class="arrow" style="color:var(--gate)">⇢</div>
+            <div class="box fail" style="flex:0.9"><div class="t">on failure: auto-rollback</div><div class="s">Service → previous color · rollout undo</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="podnote">Feature branches stop after Container Scan (nothing is pushed or deployed). Every stage failure → build red → Slack ❌.</div>
+    </div>
+  </div>
+
+  <!-- Mobile lane -->
+  <div class="lane mob">
+    <div class="label">taskflow-mobile</div>
+    <div class="body">
+      <div class="podnote">Pod: <code>ghcr.io/cirruslabs/flutter:3.44.3</code> (= frontend/.fvmrc) · PVC <code>flutter-cache</code> (pub cache, Gradle home) · Gradle heap capped at 3 GB via GRADLE_USER_HOME</div>
+      <div class="row">
+        <div class="box" style="flex:0.8"><div class="t">Setup</div><div class="s">flutter pub get</div></div>
+        <div class="arrow">→</div>
+        <div class="par" style="flex:2.6">
+          <div class="ph">Quality &amp; Security ∥ (fail-fast)</div>
+          <div class="grid" style="grid-template-columns: repeat(3, 1fr);">
+            <div class="box gate"><div class="t">flutter analyze</div><div class="s">errors + warnings fatal</div></div>
+            <div class="box gate"><div class="t">flutter test --coverage</div><div class="s">lcov.info archived</div></div>
+            <div class="box gate"><div class="t">SCA: osv-scanner</div><div class="s">pubspec.lock vs osv.dev</div></div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="box" style="flex:1"><div class="t">Build Debug APK <span class="tag all">all</span></div><div class="s">installable test build per branch</div></div>
+        <div class="arrow">→</div>
+        <div class="box" style="flex:1.25"><div class="t">Build Signed Release AAB <span class="tag main">main</span></div><div class="s">keystore + password via withCredentials</div></div>
+        <div class="arrow">→</div>
+        <div class="box gate" style="flex:1"><div class="t">Verify signer</div><div class="s">cert SHA-256 = upload key, not debug</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- bottom -->
+  <div class="bottom">
+    <div class="systems">
+      <div class="sys"><div class="t">kind cluster · ns default</div><div class="s">Deployments <code>taskflow-blue</code> / <code>taskflow-green</code> · Service <code>taskflow</code> (selector color) · postgres, 2× redis</div></div>
+      <div class="sys"><div class="t">kind-registry:5000</div><div class="s">pods push <code>kind-registry:5000</code>; nodes pull <code>localhost:5000</code> (containerd mirror)</div></div>
+      <div class="sys"><div class="t">SonarQube :9000</div><div class="s">project taskflow-api · webhook → Jenkins for the Quality Gate</div></div>
+      <div class="sys"><div class="t">Prometheus :9090 + Grafana :3001</div><div class="s">scrapes <code>jenkins:8080/prometheus/</code> every 15 s · Health Gate reads <code>jenkins_runs_*</code></div></div>
+      <div class="sys"><div class="t">Slack #taskflow-ci</div><div class="s">post success / failure / aborted: job, #, branch, build URL</div></div>
+      <div class="sys"><div class="t">Jenkins credentials (IDs only in code)</div><div class="s">registry-creds · sonar-token · kind-kubeconfig · cosign-key/-password · android-upload-keystore/-password · slack-bot-token</div></div>
+    </div>
+    <div class="panel">
+      <h3>Legend</h3>
+      <div class="legend">
+        <div class="sw" style="background:var(--gatebg);border:1px solid #f0b48f;border-left:3px solid var(--gate)"></div><div><b>◆ Gate</b>: build stops here if the check fails</div>
+        <div class="sw" style="background:var(--step);border:1px solid var(--line)"></div><div>Step (produces something, no pass/fail policy)</div>
+        <div class="sw" style="background:var(--par);border:1px dashed #8fa9cf"></div><div>∥ Parallel group: independent, read-only on the source</div>
+        <div class="sw" style="background:#fff;border:1px dashed var(--gate)"></div><div>Failure path (automatic)</div>
+        <div style="white-space:nowrap"><span class="tag all">all</span><span class="tag dev">develop</span><span class="tag main">main</span></div><div>Branches the stage runs on (<code>when { branch }</code>)</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span>Gates by lab: 03 lint/test · 04 branch rules + approval · 05 Sonar QG, E2E · 06 gitleaks, SAST, SCA→OPA, SBOM · 07 Trivy, blue/green + rollback · 08 tfsec/checkov · 09 k8s pods, Prometheus · 10 health gate, secret lint, osv, AAB signer</span>
+    <span>jenkin-store-pos · Lab 10</span>
+  </footer>
+</div>
+</body>
+</html>

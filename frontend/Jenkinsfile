@@ -20,9 +20,12 @@ pipeline {
                 spec:
                   containers:
                   - name: flutter
-                    # Same Flutter as frontend/.fvmrc. The manual says cirruslabs/flutter:stable, but
-                    # "stable" moves: pinning means CI builds with the SDK the team develops with.
-                    image: ghcr.io/cirruslabs/flutter:3.44.3
+                    # Closest published tag to frontend/.fvmrc (3.44.3): cirruslabs only publishes
+                    # up to 3.44.0, verified against ghcr.io/v2/cirruslabs/flutter/tags/list.
+                    # The manual says cirruslabs/flutter:stable, but "stable" moves under you;
+                    # pinning means CI builds with the SDK the team develops with.
+                    # pubspec.yaml needs Dart ^3.12.2, which 3.44.0 ships.
+                    image: ghcr.io/cirruslabs/flutter:3.44.0
                     command: ['cat']
                     tty: true
                     env:
