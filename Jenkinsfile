@@ -249,6 +249,12 @@ pipeline {
                         }
                     }
                 }
+
+                stage('Jenkinsfile Secret Lint') {
+                    steps {
+                        sh 'bash ci/check-jenkinsfile-secrets.sh'
+                    }
+                }
             }
         }
 

@@ -1,8 +1,15 @@
 title = "Gitleaks Config"
 
 [allowlist]
-description = "Ignore test directories and mock fixtures"
+description = "Test fixtures, and the rotated Lab 07 cosign key that is still in git history"
 paths = [
     '''(^|/)server/test/''',
     '''(^|/)e2e/''',
+    # Lab 10 Task 2: cosign.key was committed in 4a9fb12 ("help") and therefore burned.
+    # It was ROTATED (new key pair generated, the Jenkins credentials cosign-key /
+    # cosign-password re-uploaded) and removed from the index + added to .gitignore.
+    # The blob still in history is a dead key, so gitleaks may stop reporting it.
+    # This allowlist is only valid BECAUSE the key was rotated - never add a path here
+    # to silence a key that is still in use.
+    '''(^|/)cosign\.key$''',
 ]

@@ -34,8 +34,8 @@ pipeline {
         TF_PLUGIN_CACHE_DIR = '/root/.terraform.d/plugin-cache'
 
         // LocalStack accepts any credentials. These are NOT real AWS keys.
-        AWS_ACCESS_KEY_ID     = 'test'
-        AWS_SECRET_ACCESS_KEY = 'test'
+        AWS_ACCESS_KEY_ID     = 'test'        // secret-lint:allow LocalStack dummy credential, not a real AWS key
+        AWS_SECRET_ACCESS_KEY = 'test'        // secret-lint:allow LocalStack dummy credential, not a real AWS key
         AWS_DEFAULT_REGION    = 'us-east-1'
 
         // Hosts are recreated on every apply, so their SSH host keys always change
