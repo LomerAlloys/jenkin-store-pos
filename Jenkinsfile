@@ -59,7 +59,21 @@ pipeline {
                 }
             }
         }
+        stage('Setup Python & Install') {
+            steps {
+                sh '''
+                    apt-get update && apt-get install -y python3-venv
 
+                    # Create and activate a venv in the current workspace
+                    python3 -m venv .venv
+                    . .venv/bin/activate
+
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                '''
+            }
+        }
+        
         stage('Secrets Detection') {
             steps {
                 sh '''
