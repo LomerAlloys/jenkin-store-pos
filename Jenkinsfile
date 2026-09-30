@@ -182,10 +182,13 @@ pipeline {
                     --file taskflow-api.cdx.json
                 '''
 
-                // Sign with Cosign using the injected private key
-                withCredentials([file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')]) {
+                // Sign with Cosign using the injected private key + password
+                withCredentials([
+                    file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY'),
+                    string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
+                ]) {
                     sh '''
-                        COSIGN_PASSWORD="cosign-key" \
+                        cosign sign-blob \
                         --key "$COSIGN_KEY" \
                         --output-signature taskflow-api.cdx.json.sig \
                         taskflow-api.cdx.json
