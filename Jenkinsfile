@@ -113,23 +113,62 @@ pipeline {
         }
 
         stage('E2E Test') {
-            // agent {
-            //     docker {
-            //         image 'mcr.microsoft.com/playwright:v1.49.0-noble'
-            //         label 'linux-build'
-            //         args '-u root --network jenkins-net'
-            //     }
-            // }
+            // ใช้ Playwright Docker image ตามที่ Lab กำหนด
+            // --network jenkins-net: เข้าถึง containers บน jenkins-net ได้
+            // --add-host: ให้ container resolve host.docker.internal สำหรับ docker compose API
+            agent {
+                docker {
+                    image 'mcr.microsoft.com/playwright:v1.49.0-noble'
+                    label 'linux-build'
+                    args '''-u root \
+                        --network jenkins-net \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -e HOME=/root'''
+                }
+            }
+            environment {
+                // จุด API ที่จะ test — api-1 container บน jenkins-net
+                // docker compose จะ start api-1 บน network ชื่อ srisurart-pos_default
+                // ใช้ host.docker.internal เพื่อเข้าถึง port ที่ bind บน localhost ของ host
+                API_BASE_URL = 'http://localhost:3000'
+            }
             steps {
+                // Step 1: ติดตั้ง docker CLI ใน Playwright container (ถ้ายังไม่มี)
+                sh '''which docker || (apt-get update -qq && apt-get install -y -qq docker.io)'''
+
+                // Step 2: Start API stack ด้วย docker compose (datastores + api-1)
+                // ใช้ .env.example ที่มี dev-only secrets + ALLOW_DEV_SECRETS=true
+                dir('server') {
+                    sh '''
+                        cp -n .env.example .env || true
+                        docker compose \
+                            -f docker-compose.yml \
+                            -f docker-compose.ci.yml \
+                            up -d --wait \
+                            postgres redis-cache redis-queue
+                        echo "=== Datastores ready, building and starting API ==="
+                        docker compose \
+                            -f docker-compose.yml \
+                            -f docker-compose.ci.yml \
+                            up -d --build --wait \
+                            api-1
+                        echo "=== API stack is up ==="
+                    '''
+                }
+
+                // Step 3: รัน Playwright E2E specs
                 dir('e2e') {
-                    // npm install: ติดตั้ง @playwright/test ก่อนรัน test
-                    // ใช้ npm install (ไม่ใช่ npm ci) เพราะยังไม่มี package-lock.json
-                    sh 'npm install'
-                    sh 'npx playwright test'
+                    sh 'npm ci'
+                    sh 'npx playwright test --reporter=list,junit,html'
                 }
             }
             post {
                 always {
+                    // Cleanup: หยุด API stack
+                    dir('server') {
+                        sh 'docker compose -f docker-compose.yml -f docker-compose.ci.yml down --remove-orphans || true'
+                    }
+                    // Publish reports
                     junit allowEmptyResults: true, testResults: 'e2e/reports/e2e-junit.xml'
                     publishHTML([
                         allowMissing: true,

@@ -1,0 +1,20 @@
+# CI-only compose override — boots only the datastores needed for E2E health checks.
+# Publish ports to host loopback so the test runner (inside the same Docker network or host)
+# can reach them directly.
+#
+# Usage (from server/):
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d postgres redis-cache redis-queue
+#
+# WARNING: never use on shared/production hosts (loopback ports expose datastores).
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis-cache:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  redis-queue:
+    ports:
+      - "127.0.0.1:6380:6379"
