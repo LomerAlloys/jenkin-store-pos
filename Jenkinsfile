@@ -126,8 +126,9 @@ pipeline {
                 API_BASE_URL = 'http://localhost:3000'
             }
             steps {
-                // Step 1: ติดตั้ง docker CLI (ต้อง apt-get update ก่อนเสมอใน node:22 Debian image)
-                sh 'which docker || (apt-get update -qq && apt-get install -y -qq docker.io)'
+                // Step 1: ติดตั้ง docker CLI + Compose V2 plugin
+                // docker.io = Docker Engine, docker-compose-plugin = "docker compose" subcommand (V2)
+                sh 'which docker || (apt-get update -qq && apt-get install -y -qq docker.io docker-compose-plugin)'
 
                 // Step 2: Start datastores + API ด้วย docker compose (DooD via docker.sock)
                 dir('server') {
