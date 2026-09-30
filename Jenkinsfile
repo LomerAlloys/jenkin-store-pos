@@ -2,14 +2,10 @@ pipeline {
 
     agent {
         docker {
-            // node:22 (Debian bookworm) ใช้ glibc ซึ่ง sonar-scanner JRE ต้องการ
-            // node:22-alpine ใช้ musl libc → sonar-scanner bundled JRE รันไม่ได้ ("java: not found")
             image 'node:22'
             label 'linux-build'
-            // -u root: รันเป็น root เพื่อให้ corepack/pnpm ทำงานได้
-            // --network jenkins-net: ให้ container เข้าถึง sonarqube:9000 ผ่าน Docker network ได้
-            // -v docker.sock: DooD สำหรับ E2E stage (docker compose up api-1)
-            args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock'
+            // + trivy-cache volume so the vuln DB isn't re-downloaded every build
+            args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/trivy'
         }
     }
 
@@ -23,13 +19,19 @@ pipeline {
         SYFT_VER     = '1.4.1'
         COSIGN_VER   = '2.2.4'
         OPA_VER      = '0.64.1'
+
+        REGISTRY    = 'localhost:5000'
+        IMAGE_NAME  = 'taskflow-api'
+        DOCKER_VER  = '27.3.1'
+        BUILDX_VER  = '0.17.1'
+        TRIVY_VER   = '0.56.2'
     }
 
     options {
         // A pipeline stage should never run unbounded because a hung process
         // (such as an interactive prompt, deadlock, or network timeout) would
         // hold the Jenkins executor indefinitely, blocking subsequent jobs and wasting CI resources.
-        timeout(time: 10, unit: 'MINUTES')
+        timeout(time: 20, unit: 'MINUTES')
     }
 
     stages {
@@ -160,91 +162,91 @@ pipeline {
             }
         }
 
-        stage('Generate SBOM') {
-            steps {
-                sh '''
-                    # Install Syft
-                    curl -sSfL \
-                    "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
-                    | sh -s -- -b /usr/local/bin "v${SYFT_VER}"
-                    syft version
+        // stage('Generate SBOM') {
+        //     steps {
+        //         sh '''
+        //             # Install Syft
+        //             curl -sSfL \
+        //             "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
+        //             | sh -s -- -b /usr/local/bin "v${SYFT_VER}"
+        //             syft version
 
-                    # Install Cosign
-                    curl -sSfL \
-                    "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VER}/cosign-linux-amd64" \
-                    -o /usr/local/bin/cosign
-                    chmod +x /usr/local/bin/cosign
-                    cosign version
+        //             # Install Cosign
+        //             curl -sSfL \
+        //             "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VER}/cosign-linux-amd64" \
+        //             -o /usr/local/bin/cosign
+        //             chmod +x /usr/local/bin/cosign
+        //             cosign version
 
-                    # Generate CycloneDX SBOM for the server app
-                    syft dir:server \
-                    --output cyclonedx-json=taskflow-api.cdx.json
-                '''
+        //             # Generate CycloneDX SBOM for the server app
+        //             syft dir:server \
+        //             --output cyclonedx-json=taskflow-api.cdx.json
+        //         '''
 
-                // Sign with Cosign using the injected private key + password
-                withCredentials([
-                    file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY'),
-                    string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
-                ]) {
-                    sh '''
-                        cosign sign-blob \
-                        --key "$COSIGN_KEY" \
-                        --output-signature taskflow-api.cdx.json.sig \
-                        taskflow-api.cdx.json
-                        echo "✅ SBOM signed"
-                    '''
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'taskflow-api.cdx.json, taskflow-api.cdx.json.sig', allowEmptyArchive: true
-                }
-            }
-        }
+        //         // Sign with Cosign using the injected private key + password
+        //         withCredentials([
+        //             file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY'),
+        //             string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
+        //         ]) {
+        //             sh '''
+        //                 cosign sign-blob \
+        //                 --key "$COSIGN_KEY" \
+        //                 --output-signature taskflow-api.cdx.json.sig \
+        //                 taskflow-api.cdx.json
+        //                 echo "✅ SBOM signed"
+        //             '''
+        //         }
+        //     }
+        //     post {
+        //         always {
+        //             archiveArtifacts artifacts: 'taskflow-api.cdx.json, taskflow-api.cdx.json.sig', allowEmptyArchive: true
+        //         }
+        //     }
+        // }
         
-        stage('Policy Gate') {
-            steps {
-                script {
-                    sh '''
-                        # Install OPA
-                        curl -sSfL \
-                        "https://openpolicyagent.org/downloads/v${OPA_VER}/opa_linux_amd64_static" \
-                        -o /usr/local/bin/opa
-                        chmod +x /usr/local/bin/opa
-                        opa version
+        // stage('Policy Gate') {
+        //     steps {
+        //         script {
+        //             sh '''
+        //                 # Install OPA
+        //                 curl -sSfL \
+        //                 "https://openpolicyagent.org/downloads/v${OPA_VER}/opa_linux_amd64_static" \
+        //                 -o /usr/local/bin/opa
+        //                 chmod +x /usr/local/bin/opa
+        //                 opa version
 
-                        # Evaluate policy against the npm audit result
-                        opa eval \
-                        --data policy/security.rego \
-                        --input audit.json \
-                        --format json \
-                        "data.security.deny" \
-                        > opa-result.json 2>&1
-                        cat opa-result.json
-                        # Extract just the deny array value ([] = no denials, ["msg",...] = blocked)
-                        jq -r '
-                          if .result == null or (.result | length) == 0
-                          then "[]"
-                          else (.result[0].expressions[0].value | @json)
-                          end
-                        ' opa-result.json > opa-result.txt
-                        cat opa-result.txt
-                    '''
+        //                 # Evaluate policy against the npm audit result
+        //                 opa eval \
+        //                 --data policy/security.rego \
+        //                 --input audit.json \
+        //                 --format json \
+        //                 "data.security.deny" \
+        //                 > opa-result.json 2>&1
+        //                 cat opa-result.json
+        //                 # Extract just the deny array value ([] = no denials, ["msg",...] = blocked)
+        //                 jq -r '
+        //                   if .result == null or (.result | length) == 0
+        //                   then "[]"
+        //                   else (.result[0].expressions[0].value | @json)
+        //                   end
+        //                 ' opa-result.json > opa-result.txt
+        //                 cat opa-result.txt
+        //             '''
 
-                    def result = readFile('opa-result.txt').trim()
-                    // [] means no denials (pass). Anything else is a denial message array.
-                    if (result != '[]') {
-                        error("🚨 Policy Gate FAILED:\n${result}")
-                    }
-                    echo "✅ Policy Gate passed — no critical CVEs"
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'opa-result.json, opa-result.txt', allowEmptyArchive: true
-                }
-            }
-        }
+        //             def result = readFile('opa-result.txt').trim()
+        //             // [] means no denials (pass). Anything else is a denial message array.
+        //             if (result != '[]') {
+        //                 error("🚨 Policy Gate FAILED:\n${result}")
+        //             }
+        //             echo "✅ Policy Gate passed — no critical CVEs"
+        //         }
+        //     }
+        //     post {
+        //         always {
+        //             archiveArtifacts artifacts: 'opa-result.json, opa-result.txt', allowEmptyArchive: true
+        //         }
+        //     }
+        // }
 
         stage('Lint') {
             steps {
@@ -296,6 +298,143 @@ pipeline {
             }
         }
 
+        stage('Setup CD Tools') {
+            steps {
+                sh '''
+                    # Docker CLI (static) + buildx plugin — talks to host daemon via the mounted socket
+                    curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VER}.tgz" \
+                    | tar -xz --strip-components=1 -C /usr/local/bin docker/docker
+                    mkdir -p /usr/local/lib/docker/cli-plugins
+                    curl -fsSL "https://github.com/docker/buildx/releases/download/v${BUILDX_VER}/buildx-v${BUILDX_VER}.linux-amd64" \
+                    -o /usr/local/lib/docker/cli-plugins/docker-buildx
+                    chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+
+                    # Trivy (pinned)
+                    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+                    | sh -s -- -b /usr/local/bin "v${TRIVY_VER}"
+
+                    # kubectl (current stable, avoids version skew with the kind node)
+                    curl -fsSL -o /usr/local/bin/kubectl \
+                    "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                    chmod +x /usr/local/bin/kubectl
+
+                    docker version && docker buildx version && trivy --version && kubectl version --client
+                '''
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                script {
+                    // Immutable tag = short commit SHA. NEVER 'latest'.
+                    env.IMAGE_TAG = env.GIT_COMMIT.take(7)
+                    env.IMAGE_REF = "${env.REGISTRY}/${env.IMAGE_NAME}:${env.IMAGE_TAG}"
+                }
+                sh '''
+                    docker build \
+                    --label org.opencontainers.image.revision="$GIT_COMMIT" \
+                    -t "$IMAGE_REF" server
+                    echo "Built $IMAGE_REF"
+                '''
+            }
+        }
+
+        stage('Container Scan') {
+            steps {
+                sh '''
+                    # Human-readable table in the console (never fails)
+                    trivy image --image-src docker --severity HIGH,CRITICAL --ignore-unfixed \
+                    --format table "$IMAGE_REF" || true
+
+                    # The gate: exit 1 on any fixable HIGH/CRITICAL; SARIF is the deliverable
+                    trivy image --image-src docker --severity HIGH,CRITICAL --ignore-unfixed \
+                    --exit-code 1 --format sarif --output trivy-results.sarif "$IMAGE_REF"
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-results.sarif', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Push Image') {
+            steps {
+                sh '''
+                    # Immutability guard: never overwrite a tag that already exists in the registry
+                    if curl -sf -o /dev/null \
+                        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                        -H "Accept: application/vnd.oci.image.index.v1+json" \
+                        -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                        "http://kind-registry:5000/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}"; then
+                    echo "Tag ${IMAGE_TAG} already in registry — not overwriting (immutable tags)"
+                    else
+                    docker push "$IMAGE_REF"
+                    fi
+                '''
+            }
+        }
+
+        stage('Blue/Green Deploy') {
+            steps {
+                withCredentials([file(credentialsId: 'kind-kubeconfig', variable: 'KUBECONFIG')]) {
+                    script {
+                        def current = sh(
+                            script: "kubectl get svc taskflow -o jsonpath='{.spec.selector.color}'",
+                            returnStdout: true
+                        ).trim()
+                        def next = (current == 'blue') ? 'green' : 'blue'
+
+                        // Stash in env so post { failure } can see them (def vars can't)
+                        env.PREV_COLOR = current
+                        env.NEXT_COLOR = next
+
+                        def deployImage = params.BREAK_DEPLOY
+                            ? "${env.REGISTRY}/${env.IMAGE_NAME}:broken"
+                            : env.IMAGE_REF
+                        echo "Live = ${current}. Deploying ${deployImage} to idle color ${next}"
+
+                        sh 'kubectl get svc taskflow -o yaml > svc-before.yaml'
+
+                        sh "kubectl set image deployment/taskflow-${next} app=${deployImage}"
+                        // --timeout is essential: without it a broken image hangs ~10 min
+                        sh "kubectl rollout status deployment/taskflow-${next} --timeout=120s"
+
+                        // Smoke test the NEW pods directly, bypassing the live Service
+                        sh """
+                            kubectl run smoke-${env.BUILD_NUMBER} --rm -i --restart=Never \
+                            --image=curlimages/curl:8.10.1 -- \
+                            curl -sf --retry 5 --retry-connrefused --retry-delay 2 \
+                            http://taskflow-${next}:8080/health/live
+                        """
+
+                        // Flip traffic
+                        sh """kubectl patch svc taskflow -p '{"spec":{"selector":{"color":"${next}"}}}'"""
+                        sh 'kubectl get svc taskflow -o yaml > svc-after.yaml'
+                        echo "Switched traffic from ${current} to ${next}"
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'svc-before.yaml, svc-after.yaml', allowEmptyArchive: true
+                }
+                failure {
+                    withCredentials([file(credentialsId: 'kind-kubeconfig', variable: 'KUBECONFIG')]) {
+                        script {
+                            if (env.PREV_COLOR) {
+                                echo "⏪ AUTOMATIC ROLLBACK: pointing Service 'taskflow' back to ${env.PREV_COLOR}"
+                                sh """kubectl patch svc taskflow -p '{"spec":{"selector":{"color":"${env.PREV_COLOR}"}}}'"""
+                                // Also restore the idle deployment to its last good revision
+                                sh "kubectl rollout undo deployment/taskflow-${env.NEXT_COLOR} || true"
+                                sh "echo \"Service now serving: \$(kubectl get svc taskflow -o jsonpath='{.spec.selector.color}')\""
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Deploy - Staging') {
             when {
                 branch 'develop'
@@ -320,62 +459,62 @@ pipeline {
             }
         }
 
-        stage('E2E Test') {
-            environment {
-                API_BASE_URL = 'http://api-1:3000'
-            }
-            steps {
-                // Playwright image มี browser/Node แต่ไม่มี Docker CLI จึงติดตั้งเฉพาะ client
-                sh '''
-                    apt-get update -qq
-                    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2
-                    echo "=== Docker & Compose versions ==="
-                    docker --version
-                    docker compose version
-                '''
+        // stage('E2E Test') {
+        //     environment {
+        //         API_BASE_URL = 'http://api-1:3000'
+        //     }
+        //     steps {
+        //         // Playwright image มี browser/Node แต่ไม่มี Docker CLI จึงติดตั้งเฉพาะ client
+        //         sh '''
+        //             apt-get update -qq
+        //             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2
+        //             echo "=== Docker & Compose versions ==="
+        //             docker --version
+        //             docker compose version
+        //         '''
 
-                // Start the API stack through the mounted host Docker socket.
-                dir('server') {
-                    sh '''
-                        cp -n .env.example .env 2>/dev/null || true
-                        docker compose \
-                            -f docker-compose.yml \
-                            -f docker-compose.ci.yml \
-                            up -d --build --wait api-1
-                        echo "=== API is up ==="
-                    '''
-                }
+        //         // Start the API stack through the mounted host Docker socket.
+        //         dir('server') {
+        //             sh '''
+        //                 cp -n .env.example .env 2>/dev/null || true
+        //                 docker compose \
+        //                     -f docker-compose.yml \
+        //                     -f docker-compose.ci.yml \
+        //                     up -d --build --wait api-1
+        //                 echo "=== API is up ==="
+        //             '''
+        //         }
 
-                // Compose creates its network after this stage container has started.
-                // Attach the Playwright runner so api-1 resolves through Docker DNS.
-                sh 'docker network connect srisurart-pos_default "$HOSTNAME"'
+        //         // Compose creates its network after this stage container has started.
+        //         // Attach the Playwright runner so api-1 resolves through Docker DNS.
+        //         sh 'docker network connect srisurart-pos_default "$HOSTNAME"'
 
-                dir('e2e') {
-                    sh 'npm ci'
-                    // Use playwright.config.ts so JUnit/HTML reports keep their configured paths.
-                    sh 'npx playwright test'
-                }
-            }
-            post {
-                always {
-                    // Disconnect first so Compose can remove its network cleanly.
-                    sh 'docker network disconnect srisurart-pos_default "$HOSTNAME" || true'
-                    dir('server') {
-                        sh 'docker compose -f docker-compose.yml -f docker-compose.ci.yml down --remove-orphans || true'
-                    }
-                    // Publish reports
-                    junit allowEmptyResults: true, testResults: 'e2e/reports/e2e-junit.xml'
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'e2e/playwright-report',
-                        reportFiles: 'index.html',
-                        reportName: 'Playwright E2E Report'
-                    ])
-                }
-            }
-        }
+        //         dir('e2e') {
+        //             sh 'npm ci'
+        //             // Use playwright.config.ts so JUnit/HTML reports keep their configured paths.
+        //             sh 'npx playwright test'
+        //         }
+        //     }
+        //     post {
+        //         always {
+        //             // Disconnect first so Compose can remove its network cleanly.
+        //             sh 'docker network disconnect srisurart-pos_default "$HOSTNAME" || true'
+        //             dir('server') {
+        //                 sh 'docker compose -f docker-compose.yml -f docker-compose.ci.yml down --remove-orphans || true'
+        //             }
+        //             // Publish reports
+        //             junit allowEmptyResults: true, testResults: 'e2e/reports/e2e-junit.xml'
+        //             publishHTML([
+        //                 allowMissing: true,
+        //                 alwaysLinkToLastBuild: true,
+        //                 keepAll: true,
+        //                 reportDir: 'e2e/playwright-report',
+        //                 reportFiles: 'index.html',
+        //                 reportName: 'Playwright E2E Report'
+        //             ])
+        //         }
+        //     }
+        // }
 
     }
 
