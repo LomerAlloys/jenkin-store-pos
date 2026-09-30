@@ -1,0 +1,66 @@
+%% Lab 10 capstone - one commit, two pipelines.
+%% Legend: hexagons = gates (the build stops here if the check fails),
+%%         rectangles = steps, cylinders = systems, dotted lines = data / notifications.
+%% Render: paste into https://mermaid.live -> Actions -> PNG/SVG -> one A4 page -> architecture.pdf
+flowchart TB
+    DEV["Developer push / PR<br/>jenkin-store-pos"] -->|"GitHub webhook (ngrok)"| JC["Jenkins controller<br/>2 multibranch jobs"]
+    JC -->|"new pod per build<br/>cloud kind, ns jenkins-agents"| API0
+    JC -->|"new pod per build"| MOB0
+
+    subgraph API["taskflow-api: Jenkinsfile (pod: node + dind)"]
+        direction TB
+        API0["Prepare (parallel)<br/>Setup Tools | pnpm install"]
+        API0 --> PAR
+        subgraph PAR["Static Checks (parallel, fail-fast)"]
+            direction LR
+            L["Lint<br/>oxlint"]
+            UT["Unit Test<br/>JUnit + coverage"]
+            SA{{"SAST<br/>Semgrep ERROR"}}
+            SC{{"SCA + Policy Gate<br/>pnpm audit + OPA"}}
+            SE{{"Secrets<br/>gitleaks history"}}
+            SB["SBOM + cosign sign"]
+            IAC{{"IaC Scan<br/>tfsec + checkov"}}
+            JL{{"Jenkinsfile<br/>secret lint"}}
+        end
+        PAR --> SQ["SonarQube Analysis"]
+        SQ --> QG{{"Quality Gate"}}
+        QG --> BI["Build Image<br/>dind, tag = sha7"]
+        BI --> TS{{"Container Scan<br/>Trivy HIGH/CRITICAL"}}
+        TS --> PU["Push Image<br/>develop + main only"]
+        PU -->|develop| STG["Deploy Staging<br/>idle color + smoke"]
+        STG --> E2E{{"E2E Staging<br/>Playwright"}}
+        PU -->|main| HG{{"Pipeline Health Gate<br/>last 20 builds >= 90%"}}
+        HG --> APR{{"Manual approval"}}
+        APR --> BG["Deploy Production<br/>blue/green switch"]
+        BG -. "failure" .-> RB["Auto rollback<br/>Service back to old color"]
+    end
+
+    subgraph MOB["taskflow-mobile: frontend/Jenkinsfile (pod: cirruslabs/flutter)"]
+        direction TB
+        MOB0["Setup<br/>flutter pub get"] --> MPAR
+        subgraph MPAR["Quality and Security (parallel, fail-fast)"]
+            direction LR
+            FA{{"flutter analyze"}}
+            FT{{"flutter test --coverage"}}
+            OSV{{"osv-scanner<br/>pubspec.lock"}}
+        end
+        MPAR --> APK["Debug APK<br/>every branch"]
+        APK -->|main| AAB["Signed release AAB<br/>Jenkins keystore"]
+        AAB --> SIG{{"Verify signer<br/>SHA-256 fingerprint"}}
+    end
+
+    subgraph MON["Monitor"]
+        PROM[("Prometheus<br/>jenkins_runs_*")]
+        GRAF["Grafana dashboard"]
+        SLK["Slack #taskflow-ci<br/>success / failure + branch + URL"]
+    end
+
+    JC -. "metrics /prometheus/" .-> PROM
+    PROM --> GRAF
+    PROM -. "query_range" .-> HG
+    BG --> K8S[("kind cluster<br/>taskflow-blue / taskflow-green")]
+    STG --> K8S
+    PU --> REG[("kind-registry:5000")]
+    REG --> K8S
+    API -. "post" .-> SLK
+    MOB -. "post" .-> SLK
