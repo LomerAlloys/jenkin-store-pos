@@ -178,8 +178,7 @@ pipeline {
 
                     # Generate CycloneDX SBOM for the server app
                     syft dir:server \
-                    --output cyclonedx-json \
-                    --file taskflow-api.cdx.json
+                    --output cyclonedx-json=taskflow-api.cdx.json
                 '''
 
                 // Sign with Cosign using the injected private key + password
