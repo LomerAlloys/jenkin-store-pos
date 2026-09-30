@@ -19,6 +19,10 @@ pipeline {
         NODE_ENV = 'test'
         // Jenkins node เคยได้รับ PATH ว่าง ทำให้ Docker Pipeline หา /usr/bin/docker ไม่เจอ
         PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+        GITLEAKS_VER = '8.18.4'
+        SYFT_VER     = '1.4.1'
+        COSIGN_VER   = '2.2.4'
+        OPA_VER      = '0.64.1'
     }
 
     options {
@@ -37,6 +41,170 @@ pipeline {
                     // Enable corepack so the pinned pnpm version is used without a separate install step
                     sh 'corepack enable'
                     sh 'pnpm install --frozen-lockfile'
+                }
+            }
+        }
+
+        stage('Secrets Detection') {
+            steps {
+                sh '''
+                    # Install Gitleaks
+                    curl -sSfL \
+                    "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VER}/gitleaks_${GITLEAKS_VER}_linux_x64.tar.gz" \
+                    | tar -xz -C /usr/local/bin gitleaks
+                    gitleaks version
+                    # Scan full git history — exit 0 so we can archive the report first
+                    gitleaks detect \
+                    --source . \
+                    --report-format json \
+                    --report-path gitleaks-report.json \
+                    --no-git false \
+                    --exit-code 1 \
+                    || GITLEAKS_EXIT=$?
+                    echo "Gitleaks exit code: ${GITLEAKS_EXIT:-0}"
+                    exit ${GITLEAKS_EXIT:-0}
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'gitleaks-report.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SAST') {
+            steps {
+                // Install Semgrep
+                sh 'pip3 install semgrep --quiet || apt-get install -y python3-pip -qq && pip3 install semgrep --quiet'
+
+                dir('server') {
+                    // ESLint with security plugin — output as SARIF
+                    sh '''
+                        pnpm add -D eslint-plugin-security @microsoft/eslint-formatter-sarif --silent
+                        npx eslint \
+                        --plugin security \
+                        --format @microsoft/eslint-formatter-sarif \
+                        --output-file ../eslint-results.sarif \
+                        src/ \
+                        || true   # warn-only: ESLint failures are reported but don't block
+                    '''
+
+                    // Semgrep OWASP Top 10 + Node.js rules
+                    sh '''
+                        semgrep scan \
+                        --config=p/owasp-top-ten \
+                        --config=p/nodejs \
+                        --sarif \
+                        --output ../semgrep-results.sarif \
+                        . \
+                        || true   # warn-only
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: '*.sarif', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SCA — npm audit') {
+            steps {
+                dir('server') {
+                    script {
+                        sh 'npm audit --audit-level=high --json > ../audit.json || true'
+
+                        def critical = sh(
+                            script: "jq '.metadata.vulnerabilities.critical' ../audit.json",
+                            returnStdout: true
+                        ).trim().toInteger()
+
+                        if (critical > 0) {
+                            error("🚨 Blocking: ${critical} critical vulnerabilities found — fix before merging!")
+                        }
+                        echo "✅ SCA passed with 0 critical vulnerabilities (warnings allowed)"
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'audit.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Generate SBOM') {
+            steps {
+                sh '''
+                    # Install Syft
+                    curl -sSfL \
+                    "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
+                    | sh -s -- -b /usr/local/bin "v${SYFT_VER}"
+                    syft version
+
+                    # Install Cosign
+                    curl -sSfL \
+                    "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VER}/cosign-linux-amd64" \
+                    -o /usr/local/bin/cosign
+                    chmod +x /usr/local/bin/cosign
+                    cosign version
+
+                    # Generate CycloneDX SBOM for the server app
+                    syft dir:server \
+                    --output cyclonedx-json \
+                    --file taskflow-api.cdx.json
+                '''
+
+                // Sign with Cosign using the injected private key
+                withCredentials([file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')]) {
+                    sh '''
+                        COSIGN_PASSWORD="" cosign sign-blob \
+                        --key "$COSIGN_KEY" \
+                        --output-signature taskflow-api.cdx.json.sig \
+                        taskflow-api.cdx.json
+                        echo "✅ SBOM signed"
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'taskflow-api.cdx.json, taskflow-api.cdx.json.sig', allowEmptyArchive: true
+                }
+            }
+        }
+        
+        stage('Policy Gate') {
+            steps {
+                script {
+                    sh '''
+                        # Install OPA
+                        curl -sSfL \
+                        "https://openpolicyagent.org/downloads/v${OPA_VER}/opa_linux_amd64_static" \
+                        -o /usr/local/bin/opa
+                        chmod +x /usr/local/bin/opa
+                        opa version
+
+                        # Evaluate policy against the npm audit result
+                        opa eval \
+                        --data policy/security.rego \
+                        --input audit.json \
+                        --format pretty \
+                        "data.security.deny" \
+                        > opa-result.txt 2>&1
+                        cat opa-result.txt
+                    '''
+
+                    def result = readFile('opa-result.txt').trim()
+                    // OPA returns [] when no denials, or ["msg1",...] when denied
+                    if (result != '[]') {
+                        error("🚨 Policy Gate FAILED:\n${result}")
+                    }
+                    echo "✅ Policy Gate passed — no critical CVEs"
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'opa-result.txt', allowEmptyArchive: true
                 }
             }
         }
