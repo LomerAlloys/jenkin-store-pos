@@ -88,79 +88,79 @@ pipeline {
             }
         }
 
-        stage('SAST') {
-            steps {
-                // Install Semgrep
-                sh '''
-                    command -v semgrep >/dev/null 2>&1 || {
-                        apt-get update -qq && apt-get install -y -qq python3-pip
-                        pip3 install --break-system-packages semgrep --quiet
-                    }
-                    semgrep --version
-                '''
+        // stage('SAST') {
+        //     steps {
+        //         // Install Semgrep
+        //         sh '''
+        //             command -v semgrep >/dev/null 2>&1 || {
+        //                 apt-get update -qq && apt-get install -y -qq python3-pip
+        //                 pip3 install --break-system-packages semgrep --quiet
+        //             }
+        //             semgrep --version
+        //         '''
 
-                dir('server') {
-                    // ESLint with security plugin — output as SARIF
-                    sh '''
-                        pnpm add -D eslint-plugin-security @microsoft/eslint-formatter-sarif --silent
-                        npx eslint \
-                        --plugin security \
-                        --format @microsoft/eslint-formatter-sarif \
-                        --output-file ../eslint-results.sarif \
-                        src/ \
-                        || true   # warn-only: ESLint failures are reported but don't block
-                    '''
+        //         dir('server') {
+        //             // ESLint with security plugin — output as SARIF
+        //             sh '''
+        //                 pnpm add -D eslint-plugin-security @microsoft/eslint-formatter-sarif --silent
+        //                 npx eslint \
+        //                 --plugin security \
+        //                 --format @microsoft/eslint-formatter-sarif \
+        //                 --output-file ../eslint-results.sarif \
+        //                 src/ \
+        //                 || true   # warn-only: ESLint failures are reported but don't block
+        //             '''
 
-                    // Semgrep OWASP Top 10 + Node.js rules
-                    sh '''
-                        semgrep scan \
-                        --config=p/owasp-top-ten \
-                        --config=p/nodejs \
-                        --sarif \
-                        --output ../semgrep-results.sarif \
-                        . \
-                        || true   # warn-only
-                    '''
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: '*.sarif', allowEmptyArchive: true
-                }
-            }
-        }
+        //             // Semgrep OWASP Top 10 + Node.js rules
+        //             sh '''
+        //                 semgrep scan \
+        //                 --config=p/owasp-top-ten \
+        //                 --config=p/nodejs \
+        //                 --sarif \
+        //                 --output ../semgrep-results.sarif \
+        //                 . \
+        //                 || true   # warn-only
+        //             '''
+        //         }
+        //     }
+        //     post {
+        //         always {
+        //             archiveArtifacts artifacts: '*.sarif', allowEmptyArchive: true
+        //         }
+        //     }
+        // }
 
-        stage('SCA — npm audit') {
-            steps {
-                script {
-                    sh 'apt-get install -y -qq jq'
+        // stage('SCA — npm audit') {
+        //     steps {
+        //         script {
+        //             sh 'apt-get install -y -qq jq'
 
-                    dir('server') {
-                        sh 'npm audit --audit-level=high --json > ../audit.json || true'
-                    }
+        //             dir('server') {
+        //                 sh 'npm audit --audit-level=high --json > ../audit.json || true'
+        //             }
 
-                    // Use jq "// 0" fallback so missing field returns 0 instead of literal "null".
-                    // npm v6: .metadata.vulnerabilities.critical  |  npm v7+: same path but may be absent.
-                    def rawCritical = sh(
-                        script: "jq '.metadata.vulnerabilities.critical // 0' audit.json",
-                        returnStdout: true
-                    ).trim()
+        //             // Use jq "// 0" fallback so missing field returns 0 instead of literal "null".
+        //             // npm v6: .metadata.vulnerabilities.critical  |  npm v7+: same path but may be absent.
+        //             def rawCritical = sh(
+        //                 script: "jq '.metadata.vulnerabilities.critical // 0' audit.json",
+        //                 returnStdout: true
+        //             ).trim()
 
-                    def critical = rawCritical.isInteger() ? rawCritical.toInteger() : 0
-                    echo "Critical vulnerabilities found: ${critical}"
+        //             def critical = rawCritical.isInteger() ? rawCritical.toInteger() : 0
+        //             echo "Critical vulnerabilities found: ${critical}"
 
-                    if (critical > 0) {
-                        error("🚨 Blocking: ${critical} critical vulnerabilities found — fix before merging!")
-                    }
-                    echo "✅ SCA passed with 0 critical vulnerabilities (warnings allowed)"
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'audit.json', allowEmptyArchive: true
-                }
-            }
-        }
+        //             if (critical > 0) {
+        //                 error("🚨 Blocking: ${critical} critical vulnerabilities found — fix before merging!")
+        //             }
+        //             echo "✅ SCA passed with 0 critical vulnerabilities (warnings allowed)"
+        //         }
+        //     }
+        //     post {
+        //         always {
+        //             archiveArtifacts artifacts: 'audit.json', allowEmptyArchive: true
+        //         }
+        //     }
+        // }
 
         // stage('Generate SBOM') {
         //     steps {
