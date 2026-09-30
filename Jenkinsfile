@@ -9,7 +9,8 @@ pipeline {
             label 'linux-build'
             // -u root: รันเป็น root เพื่อให้ corepack/pnpm ทำงานได้
             // --network jenkins-net: ให้ container เข้าถึง sonarqube:9000 ผ่าน Docker network ได้
-            args '-u root --network jenkins-net'
+            // -v docker.sock: DooD สำหรับ E2E stage (docker compose up api-1)
+            args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock'
         }
     }
 
@@ -113,50 +114,40 @@ pipeline {
         }
 
         stage('E2E Test') {
-            // ใช้ Playwright Docker image ตามที่ Lab กำหนด
-            // --network jenkins-net: เข้าถึง containers บน jenkins-net ได้
-            // --add-host: ให้ container resolve host.docker.internal สำหรับ docker compose API
-            agent {
-                docker {
-                    image 'mcr.microsoft.com/playwright:v1.49.0-noble'
-                    label 'linux-build'
-                    args '''-u root \
-                        --network jenkins-net \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -e HOME=/root'''
-                }
-            }
+            // NOTE: ไม่ใช้ stage-level Docker agent เพราะ jenkins-agent มี PATH=""
+            // ทำให้ docker: not found ก่อน spawn Playwright container ได้
+            // รัน Playwright ใน top-level node:22 container แทน
+            // - E2E specs ทั้ง 3 ใช้ request context เท่านั้น (ไม่ต้องการ browser)
+            // - docker compose รันผ่าน DooD (docker.sock mount จาก top-level agent args)
             environment {
-                // จุด API ที่จะ test — api-1 container บน jenkins-net
-                // docker compose จะ start api-1 บน network ชื่อ srisurart-pos_default
-                // ใช้ host.docker.internal เพื่อเข้าถึง port ที่ bind บน localhost ของ host
+                // api-1 จะอยู่บน compose network ชื่อ srisurart-pos_default
+                // ถ้า node:22 container ไม่ได้อยู่ network เดียวกัน ให้ชี้ไปที่ localhost
+                // ที่ port ที่ docker-compose.ci.yml publish ไว้
                 API_BASE_URL = 'http://localhost:3000'
             }
             steps {
-                // Step 1: ติดตั้ง docker CLI ใน Playwright container (ถ้ายังไม่มี)
-                sh '''which docker || (apt-get update -qq && apt-get install -y -qq docker.io)'''
+                // Step 1: ติดตั้ง docker CLI (ถ้ายังไม่มีใน node:22 container)
+                sh 'which docker || apt-get install -y -qq docker.io'
 
-                // Step 2: Start API stack ด้วย docker compose (datastores + api-1)
-                // ใช้ .env.example ที่มี dev-only secrets + ALLOW_DEV_SECRETS=true
+                // Step 2: Start datastores + API ด้วย docker compose (DooD via docker.sock)
                 dir('server') {
                     sh '''
-                        cp -n .env.example .env || true
+                        cp -n .env.example .env 2>/dev/null || true
                         docker compose \
                             -f docker-compose.yml \
                             -f docker-compose.ci.yml \
                             up -d --wait \
                             postgres redis-cache redis-queue
-                        echo "=== Datastores ready, building and starting API ==="
+                        echo "=== Datastores ready ==="
                         docker compose \
                             -f docker-compose.yml \
                             -f docker-compose.ci.yml \
-                            up -d --build --wait \
-                            api-1
-                        echo "=== API stack is up ==="
+                            up -d --build --wait api-1
+                        echo "=== API is up ==="
                     '''
                 }
 
-                // Step 3: รัน Playwright E2E specs
+                // Step 3: รัน Playwright E2E specs (3 specs: health, create-task, mark-done)
                 dir('e2e') {
                     sh 'npm ci'
                     sh 'npx playwright test --reporter=list,junit,html'
