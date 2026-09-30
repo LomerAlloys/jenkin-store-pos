@@ -78,3 +78,9 @@ crash.*.log
 # ---- Ansible (Lab 08) ----
 infra/ansible/inventory.ini
 *.retry
+
+# ---- Lab 10: keys never go in git ----
+cosign.key
+*.jks
+*.keystore
+key.properties

@@ -1,0 +1,180 @@
+// =============================================================================
+// taskflow-mobile: Lab 10 Flutter/Android pipeline
+// Jenkins job: Multibranch "taskflow-mobile", Script Path = frontend/Jenkinsfile
+//
+// analyze + test + SCA (parallel) -> debug APK (every branch) -> signed release AAB (main only)
+// Runs on an ephemeral pod in the Lab 09 cloud "kind", like the API pipeline.
+// =============================================================================
+pipeline {
+
+    agent {
+        kubernetes {
+            cloud 'kind'
+            defaultContainer 'flutter'
+            yaml '''
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  labels:
+                    app: taskflow-mobile-ci
+                spec:
+                  containers:
+                  - name: flutter
+                    # Closest published tag to frontend/.fvmrc (3.44.3): cirruslabs only publishes
+                    # up to 3.44.0, verified against ghcr.io/v2/cirruslabs/flutter/tags/list.
+                    # The manual says cirruslabs/flutter:stable, but "stable" moves under you;
+                    # pinning means CI builds with the SDK the team develops with.
+                    # pubspec.yaml needs Dart ^3.12.2, which 3.44.0 ships.
+                    image: ghcr.io/cirruslabs/flutter:3.44.0
+                    command: ['cat']
+                    tty: true
+                    env:
+                    - name: PUB_CACHE              # pub packages survive between builds
+                      value: /cache/pub
+                    - name: GRADLE_USER_HOME       # Gradle distribution + Maven deps survive too
+                      value: /cache/gradle
+                    resources:
+                      requests:
+                        cpu: "1"
+                        memory: 3Gi
+                      limits:
+                        memory: 6Gi
+                    volumeMounts:
+                    - name: cache
+                      mountPath: /cache
+                  volumes:
+                  - name: cache
+                    persistentVolumeClaim:
+                      claimName: flutter-cache
+            '''
+        }
+    }
+
+    environment {
+        APP_NAME = 'taskflow-mobile'
+        OSV_VER  = '2.3.3'                // github.com/google/osv-scanner/releases (checksum-verified)
+        // Not secrets: the alias is just a name inside the keystore, and the certificate
+        // fingerprint is public (it's in every APK/AAB you ship).
+        ANDROID_KEY_ALIAS  = 'upload'
+        UPLOAD_CERT_SHA256 = 'PASTE:YOUR:UPLOAD:CERTIFICATE:SHA256:FINGERPRINT:HERE'
+        SLACK_CHANNEL = '#taskflow-ci'
+    }
+
+    options {
+        timeout(time: 60, unit: 'MINUTES')   // first build downloads Gradle, Android deps (maybe the NDK)
+        timestamps()
+        parallelsAlwaysFailFast()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '5'))   // APKs are big
+    }
+
+    stages {
+
+        stage('Setup') {
+            steps {
+                sh '''
+                    git config --global --add safe.directory "*"
+
+                    # frontend/android/gradle.properties asks for -Xmx8G, more than this pod has.
+                    # Properties in GRADLE_USER_HOME override the project's, so we cap memory
+                    # for CI without changing what developers get locally.
+                    mkdir -p "$GRADLE_USER_HOME"
+                    printf '%s\\n' \
+                      'org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError' \
+                      'org.gradle.daemon=false' \
+                      'kotlin.compiler.execution.strategy=in-process' \
+                      > "$GRADLE_USER_HOME/gradle.properties"
+
+                    flutter --version
+                '''
+                dir('frontend') {
+                    sh 'flutter pub get'
+                }
+            }
+        }
+
+        stage('Quality & Security') {
+            parallel {
+                stage('Analyze') {
+                    steps {
+                        dir('frontend') { sh 'flutter analyze' }
+                    }
+                }
+                stage('Unit Test') {
+                    steps {
+                        dir('frontend') { sh 'flutter test --coverage' }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'frontend/coverage/lcov.info', allowEmptyArchive: true
+                        }
+                    }
+                }
+                stage('SCA - osv-scanner') {
+                    steps {
+                        sh 'bash ci/osv-scan.sh frontend/pubspec.lock'
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'osv-results.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build Debug APK') {
+            steps {
+                dir('frontend') {
+                    sh 'flutter build apk --debug --build-number="$BUILD_NUMBER"'
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'frontend/build/app/outputs/flutter-apk/app-debug.apk',
+                                     fingerprint: true
+                }
+            }
+        }
+
+        stage('Build Signed Release AAB') {
+            when { branch 'main' }
+            steps {
+                withCredentials([
+                    file(credentialsId: 'android-upload-keystore', variable: 'ANDROID_KEYSTORE_PATH'),
+                    string(credentialsId: 'android-keystore-password', variable: 'ANDROID_KEYSTORE_PASSWORD')
+                ]) {
+                    dir('frontend') {
+                        // build.gradle.kts reads ANDROID_KEYSTORE_PATH / _PASSWORD / KEY_ALIAS / KEY_PASSWORD
+                        sh '''
+                            # PKCS12 keystores (keytool's default) use the store password for the key too
+                            export ANDROID_KEY_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+                            flutter build appbundle --release --build-number="$BUILD_NUMBER"
+                        '''
+                    }
+                }
+                // Proof for the grader: signed with OUR key, not silently with the debug key
+                sh 'bash ci/verify-aab-signature.sh frontend/build/app/outputs/bundle/release/app-release.aab'
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'frontend/build/app/outputs/bundle/release/app-release.aab, aab-signature.txt',
+                                     fingerprint: true
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(channel: env.SLACK_CHANNEL, color: 'good',
+                      message: "✅ *${env.JOB_NAME}* #${env.BUILD_NUMBER} passed on branch `${env.BRANCH_NAME}` " +
+                               "(${currentBuild.durationString.replace(' and counting', '')})\n${env.BUILD_URL}")
+        }
+        failure {
+            slackSend(channel: env.SLACK_CHANNEL, color: 'danger',
+                      message: "❌ *${env.JOB_NAME}* #${env.BUILD_NUMBER} FAILED on branch `${env.BRANCH_NAME}`\n" +
+                               "${env.BUILD_URL}console")
+        }
+    }
+}
