@@ -1,0 +1,57 @@
+# Lab 09 - where Jenkins agent pods live, and the identity Jenkins uses to create them.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins-agents
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins
+  namespace: jenkins-agents
+---
+# Only what the Kubernetes plugin needs: manage pods, exec into them, read logs/events.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-agent-launcher
+  namespace: jenkins-agents
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-agent-launcher
+  namespace: jenkins-agents
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-agent-launcher
+---
+# Long-lived token for the ServiceAccount (K8s >= 1.24 no longer creates one automatically).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jenkins-token
+  namespace: jenkins-agents
+  annotations:
+    kubernetes.io/service-account.name: jenkins
+type: kubernetes.io/service-account-token
+
+

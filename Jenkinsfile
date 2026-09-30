@@ -1,11 +1,30 @@
 pipeline {
 
+    // Lab 09: every build gets a brand-new pod in kind (namespace jenkins-agents),
+    // deleted when the build ends (cloud "kind", Pod Retention = Never).
+    // node:22 (not node:20-alpine): package.json requires Node >= 22 and pnpm refuses
+    // to install a project whose own "engines" don't match; SonarScanner's JRE needs glibc.
     agent {
-        docker {
-            image 'node:22'
-            label 'linux-build'
-            // + trivy-cache volume so the vuln DB isn't re-downloaded every build
-            args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/trivy'
+        kubernetes {
+            cloud 'kind'
+            defaultContainer 'node'     // sh steps run in "node", not in the jnlp container
+            yaml '''
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  labels:
+                    app: taskflow-ci
+                spec:
+                  containers:
+                  - name: node
+                    image: node:22
+                    command: ['cat']
+                    tty: true
+                    resources:
+                      requests:
+                        cpu: 250m
+                        memory: 512Mi
+            '''
         }
     }
 
@@ -31,12 +50,16 @@ pipeline {
         // A pipeline stage should never run unbounded because a hung process
         // (such as an interactive prompt, deadlock, or network timeout) would
         // hold the Jenkins executor indefinitely, blocking subsequent jobs and wasting CI resources.
-        timeout(time: 20, unit: 'MINUTES')
+        // Lab 09: 30 min - the first pod pulls node:22 (~400 MB) inside kind
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     stages {
         stage('Install') {
             steps {
+                // Lab 09: workspace was checked out by the jnlp container (uid 1000) but we run
+                // as root in "node" -> git would refuse with "dubious ownership" (gitleaks, Sonar blame)
+                sh 'git config --global --add safe.directory "*"'
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
                     // Project uses pnpm (packageManager: pnpm@10.34.5) with pnpm-lock.yaml
@@ -298,140 +321,155 @@ pipeline {
             }
         }
 
-        stage('Setup CD Tools') {
-            steps {
-                sh '''
-                    # Docker CLI (static) + buildx plugin — talks to host daemon via the mounted socket
-                    curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VER}.tgz" \
-                    | tar -xz --strip-components=1 -C /usr/local/bin docker/docker
-                    mkdir -p /usr/local/lib/docker/cli-plugins
-                    curl -fsSL "https://github.com/docker/buildx/releases/download/v${BUILDX_VER}/buildx-v${BUILDX_VER}.linux-amd64" \
-                    -o /usr/local/lib/docker/cli-plugins/docker-buildx
-                    chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
-
-                    # Trivy (pinned + checksum-verified; no install.sh from 'main')
-                    cd /tmp
-                    curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
-                    curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_checksums.txt"
-                    grep " trivy_${TRIVY_VER}_Linux-64bit.tar.gz\$" "trivy_${TRIVY_VER}_checksums.txt" | sha256sum -c -
-                    tar -xzf "trivy_${TRIVY_VER}_Linux-64bit.tar.gz" -C /usr/local/bin trivy
-                    cd - >/dev/null
-
-                    # kubectl (current stable, avoids version skew with the kind node)
-                    curl -fsSL -o /usr/local/bin/kubectl \
-                    "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-                    chmod +x /usr/local/bin/kubectl
-
-                    docker version && docker buildx version && trivy --version && kubectl version --client
-                '''
-            }
-        }
-
-        stage('Build Image') {
-            steps {
-                script {
-                    // Immutable tag = short commit SHA. NEVER 'latest'.
-                    env.IMAGE_TAG = env.GIT_COMMIT.take(7)
-                    env.IMAGE_REF = "${env.REGISTRY}/${env.IMAGE_NAME}:${env.IMAGE_TAG}"
-                }
-                sh '''
-                    docker build \
-                    --label org.opencontainers.image.revision="$GIT_COMMIT" \
-                    -t "$IMAGE_REF" server
-                    echo "Built $IMAGE_REF"
-                '''
-            }
-        }
-
-        stage('Container Scan') {
-            steps {
-                sh '''
-                    # Human-readable table in the console (never fails)
-                    trivy image --image-src docker --severity HIGH,CRITICAL --ignore-unfixed \
-                    --format table "$IMAGE_REF" || true
-
-                    # The gate: exit 1 on any fixable HIGH/CRITICAL; SARIF is the deliverable
-                    trivy image --image-src docker --severity HIGH,CRITICAL --ignore-unfixed \
-                    --exit-code 1 --format sarif --output trivy-results.sarif "$IMAGE_REF"
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'trivy-results.sarif', allowEmptyArchive: true
+        // Lab 09: these stages need the HOST Docker daemon (docker build/push, trivy --image-src docker).
+        // kind nodes run containerd, so a pod has no docker.sock -> keep them on the static agent.
+        // One parent stage = one container, so tools installed in Setup CD Tools survive.
+        stage('Image & Deploy (Docker host)') {
+            agent {
+                docker {
+                    image 'node:22'
+                    label 'linux-build'
+                    // + trivy-cache volume so the vuln DB isn't re-downloaded every build
+                    args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/trivy'
                 }
             }
-        }
+            stages {
+                stage('Setup CD Tools') {
+                    steps {
+                        sh '''
+                            # Docker CLI (static) + buildx plugin — talks to host daemon via the mounted socket
+                            curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VER}.tgz" \
+                            | tar -xz --strip-components=1 -C /usr/local/bin docker/docker
+                            mkdir -p /usr/local/lib/docker/cli-plugins
+                            curl -fsSL "https://github.com/docker/buildx/releases/download/v${BUILDX_VER}/buildx-v${BUILDX_VER}.linux-amd64" \
+                            -o /usr/local/lib/docker/cli-plugins/docker-buildx
+                            chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
 
-        stage('Push Image') {
-            steps {
-                sh '''
-                    # Immutability guard: never overwrite a tag that already exists in the registry
-                    if curl -sf -o /dev/null \
-                        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-                        -H "Accept: application/vnd.oci.image.index.v1+json" \
-                        -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-                        "http://kind-registry:5000/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}"; then
-                    echo "Tag ${IMAGE_TAG} already in registry — not overwriting (immutable tags)"
-                    else
-                    docker push "$IMAGE_REF"
-                    fi
-                '''
-            }
-        }
+                            # Trivy (pinned + checksum-verified; no install.sh from 'main')
+                            cd /tmp
+                            curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
+                            curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_checksums.txt"
+                            grep " trivy_${TRIVY_VER}_Linux-64bit.tar.gz\$" "trivy_${TRIVY_VER}_checksums.txt" | sha256sum -c -
+                            tar -xzf "trivy_${TRIVY_VER}_Linux-64bit.tar.gz" -C /usr/local/bin trivy
+                            cd - >/dev/null
 
-        stage('Blue/Green Deploy') {
-            steps {
-                withCredentials([file(credentialsId: 'kind-kubeconfig', variable: 'KUBECONFIG')]) {
-                    script {
-                        def current = sh(
-                            script: "kubectl get svc taskflow -o jsonpath='{.spec.selector.color}'",
-                            returnStdout: true
-                        ).trim()
-                        def next = (current == 'blue') ? 'green' : 'blue'
+                            # kubectl (current stable, avoids version skew with the kind node)
+                            curl -fsSL -o /usr/local/bin/kubectl \
+                            "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                            chmod +x /usr/local/bin/kubectl
 
-                        // Stash in env so post { failure } can see them (def vars can't)
-                        env.PREV_COLOR = current
-                        env.NEXT_COLOR = next
-
-                        def deployImage = params.BREAK_DEPLOY
-                            ? "${env.REGISTRY}/${env.IMAGE_NAME}:broken"
-                            : env.IMAGE_REF
-                        echo "Live = ${current}. Deploying ${deployImage} to idle color ${next}"
-
-                        sh 'kubectl get svc taskflow -o yaml > svc-before.yaml'
-
-                        sh "kubectl set image deployment/taskflow-${next} app=${deployImage}"
-                        // --timeout is essential: without it a broken image hangs ~10 min
-                        sh "kubectl rollout status deployment/taskflow-${next} --timeout=120s"
-
-                        // Smoke test the NEW pods directly, bypassing the live Service
-                        sh """
-                            kubectl run smoke-${env.BUILD_NUMBER} --rm -i --restart=Never \
-                            --image=curlimages/curl:8.10.1 -- \
-                            curl -sf --retry 5 --retry-connrefused --retry-delay 2 \
-                            http://taskflow-${next}:8080/health/live
-                        """
-
-                        // Flip traffic
-                        sh """kubectl patch svc taskflow -p '{"spec":{"selector":{"color":"${next}"}}}'"""
-                        sh 'kubectl get svc taskflow -o yaml > svc-after.yaml'
-                        echo "Switched traffic from ${current} to ${next}"
+                            docker version && docker buildx version && trivy --version && kubectl version --client
+                        '''
                     }
                 }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'svc-before.yaml, svc-after.yaml', allowEmptyArchive: true
-                }
-                failure {
-                    withCredentials([file(credentialsId: 'kind-kubeconfig', variable: 'KUBECONFIG')]) {
+
+                stage('Build Image') {
+                    steps {
                         script {
-                            if (env.PREV_COLOR) {
-                                echo "⏪ AUTOMATIC ROLLBACK: pointing Service 'taskflow' back to ${env.PREV_COLOR}"
-                                sh """kubectl patch svc taskflow -p '{"spec":{"selector":{"color":"${env.PREV_COLOR}"}}}'"""
-                                // Also restore the idle deployment to its last good revision
-                                sh "kubectl rollout undo deployment/taskflow-${env.NEXT_COLOR} || true"
-                                sh "echo \"Service now serving: \$(kubectl get svc taskflow -o jsonpath='{.spec.selector.color}')\""
+                            // Immutable tag = short commit SHA. NEVER 'latest'.
+                            env.IMAGE_TAG = env.GIT_COMMIT.take(7)
+                            env.IMAGE_REF = "${env.REGISTRY}/${env.IMAGE_NAME}:${env.IMAGE_TAG}"
+                        }
+                        sh '''
+                            docker build \
+                            --label org.opencontainers.image.revision="$GIT_COMMIT" \
+                            -t "$IMAGE_REF" server
+                            echo "Built $IMAGE_REF"
+                        '''
+                    }
+                }
+
+                stage('Container Scan') {
+                    steps {
+                        sh '''
+                            # Human-readable table in the console (never fails)
+                            trivy image --image-src docker --severity HIGH,CRITICAL --ignore-unfixed \
+                            --format table "$IMAGE_REF" || true
+
+                            # The gate: exit 1 on any fixable HIGH/CRITICAL; SARIF is the deliverable
+                            trivy image --image-src docker --severity HIGH,CRITICAL --ignore-unfixed \
+                            --exit-code 1 --format sarif --output trivy-results.sarif "$IMAGE_REF"
+                        '''
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'trivy-results.sarif', allowEmptyArchive: true
+                        }
+                    }
+                }
+
+                stage('Push Image') {
+                    steps {
+                        sh '''
+                            # Immutability guard: never overwrite a tag that already exists in the registry
+                            if curl -sf -o /dev/null \
+                                -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                                -H "Accept: application/vnd.oci.image.index.v1+json" \
+                                -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                                "http://kind-registry:5000/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}"; then
+                            echo "Tag ${IMAGE_TAG} already in registry — not overwriting (immutable tags)"
+                            else
+                            docker push "$IMAGE_REF"
+                            fi
+                        '''
+                    }
+                }
+
+                stage('Blue/Green Deploy') {
+                    steps {
+                        withCredentials([file(credentialsId: 'kind-kubeconfig', variable: 'KUBECONFIG')]) {
+                            script {
+                                def current = sh(
+                                    script: "kubectl get svc taskflow -o jsonpath='{.spec.selector.color}'",
+                                    returnStdout: true
+                                ).trim()
+                                def next = (current == 'blue') ? 'green' : 'blue'
+
+                                // Stash in env so post { failure } can see them (def vars can't)
+                                env.PREV_COLOR = current
+                                env.NEXT_COLOR = next
+
+                                def deployImage = params.BREAK_DEPLOY
+                                    ? "${env.REGISTRY}/${env.IMAGE_NAME}:broken"
+                                    : env.IMAGE_REF
+                                echo "Live = ${current}. Deploying ${deployImage} to idle color ${next}"
+
+                                sh 'kubectl get svc taskflow -o yaml > svc-before.yaml'
+
+                                sh "kubectl set image deployment/taskflow-${next} app=${deployImage}"
+                                // --timeout is essential: without it a broken image hangs ~10 min
+                                sh "kubectl rollout status deployment/taskflow-${next} --timeout=120s"
+
+                                // Smoke test the NEW pods directly, bypassing the live Service
+                                sh """
+                                    kubectl run smoke-${env.BUILD_NUMBER} --rm -i --restart=Never \
+                                    --image=curlimages/curl:8.10.1 -- \
+                                    curl -sf --retry 5 --retry-connrefused --retry-delay 2 \
+                                    http://taskflow-${next}:8080/health/live
+                                """
+
+                                // Flip traffic
+                                sh """kubectl patch svc taskflow -p '{"spec":{"selector":{"color":"${next}"}}}'"""
+                                sh 'kubectl get svc taskflow -o yaml > svc-after.yaml'
+                                echo "Switched traffic from ${current} to ${next}"
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'svc-before.yaml, svc-after.yaml', allowEmptyArchive: true
+                        }
+                        failure {
+                            withCredentials([file(credentialsId: 'kind-kubeconfig', variable: 'KUBECONFIG')]) {
+                                script {
+                                    if (env.PREV_COLOR) {
+                                        echo "⏪ AUTOMATIC ROLLBACK: pointing Service 'taskflow' back to ${env.PREV_COLOR}"
+                                        sh """kubectl patch svc taskflow -p '{"spec":{"selector":{"color":"${env.PREV_COLOR}"}}}'"""
+                                        // Also restore the idle deployment to its last good revision
+                                        sh "kubectl rollout undo deployment/taskflow-${env.NEXT_COLOR} || true"
+                                        sh "echo \"Service now serving: \$(kubectl get svc taskflow -o jsonpath='{.spec.selector.color}')\""
+                                    }
+                                }
                             }
                         }
                     }

@@ -1,0 +1,34 @@
+groups:
+  - name: jenkins-slo
+    rules:
+      # ---- SLIs as recording rules (one name to reuse in Grafana and alerts) ----
+      - record: jenkins:build_duration_p95:seconds
+        expr: max(jenkins_job_building_duration{quantile="0.95"})
+
+      - record: jenkins:queue_wait_p95:seconds
+        expr: max(jenkins_job_queuing_duration{quantile="0.95"})
+
+      # ---- Symptom alert: builds wait > 2 min in the queue, for 5 min straight ----
+      - alert: JenkinsQueueBacklog
+        # Left side: how long recent builds waited before getting an executor (seconds).
+        # Right side: the queue is not empty *now*, so the alert resolves once the backlog is gone
+        # (the timer keeps its last values when no new builds start).
+        # "and on()" because the recording rule has no labels and the gauge has job/instance labels.
+        expr: |
+          jenkins:queue_wait_p95:seconds > 120
+          and on() jenkins_queue_size_value > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jenkins build queue backlog exceeds 2 minutes"
+          description: "p95 queue wait is {{ $value | humanizeDuration }} and builds are still queued. Agent capacity is too low (check the Kubernetes pod template concurrency limit)."
+
+      # ---- Slow-burn SLO alert (ticket, not page) ----
+      - alert: JenkinsBuildDurationSLOAtRisk
+        expr: jenkins:build_duration_p95:seconds > 360
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "p95 build duration above the 6-minute SLO for 30 minutes"
