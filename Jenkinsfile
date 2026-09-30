@@ -24,7 +24,7 @@ pipeline {
         IMAGE_NAME  = 'taskflow-api'
         DOCKER_VER  = '27.3.1'
         BUILDX_VER  = '0.17.1'
-        TRIVY_VER   = '0.56.2'
+        TRIVY_VER   = '0.69.3'
     }
 
     options {
@@ -309,9 +309,13 @@ pipeline {
                     -o /usr/local/lib/docker/cli-plugins/docker-buildx
                     chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
 
-                    # Trivy (pinned)
-                    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-                    | sh -s -- -b /usr/local/bin "v${TRIVY_VER}"
+                    # Trivy (pinned + checksum-verified; no install.sh from 'main')
+                    cd /tmp
+                    curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
+                    curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_checksums.txt"
+                    grep " trivy_${TRIVY_VER}_Linux-64bit.tar.gz\$" "trivy_${TRIVY_VER}_checksums.txt" | sha256sum -c -
+                    tar -xzf "trivy_${TRIVY_VER}_Linux-64bit.tar.gz" -C /usr/local/bin trivy
+                    cd - >/dev/null
 
                     # kubectl (current stable, avoids version skew with the kind node)
                     curl -fsSL -o /usr/local/bin/kubectl \
