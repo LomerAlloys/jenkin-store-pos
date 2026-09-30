@@ -19,7 +19,7 @@ pipeline {
     }
 
     environment {
-        PATH = '/opt/iac/bin:/opt/iac/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+        PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
         TF_VER           = '1.15.8'
         TFSEC_VER        = '1.28.14'
@@ -56,9 +56,21 @@ pipeline {
         stage('Setup IaC Tools') {
             steps {
                 sh '''
+                    # Cached tools live in the iac-tools volume; put them on PATH for this script
+                    export PATH="/opt/iac/bin:/opt/iac/venv/bin:$PATH"
+
                     mkdir -p /opt/iac/bin "$TF_PLUGIN_CACHE_DIR"
                     apt-get update -qq && apt-get install -y -qq unzip python3-venv >/dev/null
+                    
+                    # Make the tools visible to every later stage (same container, default PATH)
+                    for t in terraform tfsec docker; do
+                        ln -sf "/opt/iac/bin/$t" "/usr/local/bin/$t"
+                    done
+                    for t in checkov ansible ansible-playbook ansible-lint ansible-galaxy ansible-config ansible-inventory; do
+                        ln -sf "/opt/iac/venv/bin/$t" "/usr/local/bin/$t"
+                    done
 
+                    terraform version
                     # Terraform — pinned + checksum-verified
                     if ! terraform version 2>/dev/null | grep -q "v${TF_VER}"; then
                         cd /tmp
