@@ -126,9 +126,25 @@ pipeline {
                 API_BASE_URL = 'http://localhost:3000'
             }
             steps {
-                // Step 1: ติดตั้ง docker CLI + Compose V2 plugin
-                // docker.io = Docker Engine, docker-compose-plugin = "docker compose" subcommand (V2)
-                sh 'which docker || (apt-get update -qq && apt-get install -y -qq docker.io docker-compose-plugin)'
+                // Step 1: ติดตั้ง docker CLI + Compose V2
+                // docker-compose-plugin ไม่มีใน Debian default repos
+                // ดาวน์โหลด compose V2 binary จาก GitHub แล้ว register เป็น docker CLI plugin
+                sh '''
+                    if ! which docker > /dev/null 2>&1; then
+                        apt-get update -qq
+                        apt-get install -y -qq docker.io curl
+                    fi
+                    if ! docker compose version > /dev/null 2>&1; then
+                        mkdir -p /usr/lib/docker/cli-plugins
+                        curl -fsSL \
+                            https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-x86_64 \
+                            -o /usr/lib/docker/cli-plugins/docker-compose
+                        chmod +x /usr/lib/docker/cli-plugins/docker-compose
+                    fi
+                    echo "=== Docker & Compose versions ==="
+                    docker --version
+                    docker compose version
+                '''
 
                 // Step 2: Start datastores + API ด้วย docker compose (DooD via docker.sock)
                 dir('server') {
