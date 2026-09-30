@@ -1,0 +1,144 @@
+---
+# Lab 08 - configure the host that Terraform created.
+# Play 1 uses only "raw" because a fresh Ubuntu image may not have Python yet,
+# and every normal Ansible module needs Python on the target.
+# No "become": LocalStack instances log in as root and have no sudo.
+# On a real VM (user ubuntu) run ansible-playbook with --become instead.
+- name: Bootstrap Python on the new host
+  hosts: taskflow
+  gather_facts: false
+  tasks:
+    - name: Install python3 and python3-apt if missing
+      ansible.builtin.raw: |
+        if command -v python3 >/dev/null 2>&1 && python3 -c 'import apt' 2>/dev/null; then
+          echo "python already present"
+        else
+          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 python3-apt
+          echo "BOOTSTRAPPED"
+        fi
+      register: bootstrap
+      changed_when: "'BOOTSTRAPPED' in bootstrap.stdout"
+
+- name: Install Node.js and Docker, then pull taskflow-api
+  hosts: taskflow
+  gather_facts: true
+  vars:
+    node_version: "22.20.0"
+    node_dir: "/opt/node-v{{ node_version }}-linux-x64"
+    registry: "kind-registry:5000"
+    image_tag: "bootstrap"
+    image_ref: "{{ registry }}/taskflow-api:{{ image_tag }}"
+
+  tasks:
+    - name: Install base packages and Docker Engine
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - xz-utils
+          - docker.io
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # ---------- Node.js (official tarball, checksum-verified) ----------
+    - name: Download Node.js {{ node_version }}
+      ansible.builtin.get_url:
+        url: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.xz"
+        dest: "/tmp/node-v{{ node_version }}-linux-x64.tar.xz"
+        checksum: "sha256:https://nodejs.org/dist/v{{ node_version }}/SHASUMS256.txt"
+        mode: "0644"
+
+    - name: Unpack Node.js into /opt
+      ansible.builtin.unarchive:
+        src: "/tmp/node-v{{ node_version }}-linux-x64.tar.xz"
+        dest: /opt
+        remote_src: true
+        creates: "{{ node_dir }}/bin/node"
+
+    - name: Put node, npm and npx on the PATH
+      ansible.builtin.file:
+        src: "{{ node_dir }}/bin/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        state: link
+      loop:
+        - node
+        - npm
+        - npx
+
+    # ---------- Docker daemon ----------
+    - name: Create /etc/docker
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: "0755"
+
+    - name: Configure dockerd (trust the private lab registry)
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+        content: |
+          {
+            "insecure-registries": ["{{ registry }}"],
+            "storage-driver": "vfs"
+          }
+      register: daemon_json
+
+    - name: Start Docker with systemd (real VM)
+      ansible.builtin.systemd_service:
+        name: docker
+        state: "{{ 'restarted' if daemon_json.changed else 'started' }}"
+        enabled: true
+      when: ansible_facts['service_mgr'] == 'systemd'
+
+    - name: Check whether dockerd is running (container-based host)
+      ansible.builtin.command:
+        cmd: pgrep -x dockerd
+      register: dockerd_running
+      changed_when: false
+      failed_when: false
+      when: ansible_facts['service_mgr'] != 'systemd'
+
+    - name: Start dockerd in the background (no systemd inside LocalStack instances)
+      ansible.builtin.shell:
+        cmd: nohup dockerd > /var/log/dockerd.log 2>&1 < /dev/null &
+      changed_when: true
+      when:
+        - ansible_facts['service_mgr'] != 'systemd'
+        - dockerd_running.rc != 0
+
+    - name: Wait for the Docker socket
+      ansible.builtin.wait_for:
+        path: /var/run/docker.sock
+        timeout: 60
+
+    # ---------- Proof ----------
+    - name: Show installed versions
+      ansible.builtin.command:
+        cmd: "{{ item }}"
+      loop:
+        - node --version
+        - npm --version
+        - docker version --format "{{ '{{' }}.Server.Version{{ '}}' }}"
+      register: versions
+      changed_when: false
+
+    - name: Print versions
+      ansible.builtin.debug:
+        msg: "{{ versions.results | map(attribute='stdout') | list }}"
+
+    - name: Pull the taskflow-api image built in Lab 07
+      ansible.builtin.command:
+        cmd: "docker pull {{ image_ref }}"
+      register: pull
+      changed_when: "'Downloaded newer image' in pull.stdout"
+
+    - name: List taskflow-api images on the host
+      ansible.builtin.command:
+        cmd: docker images {{ registry }}/taskflow-api --format "{{ '{{' }}.Repository{{ '}}' }}:{{ '{{' }}.Tag{{ '}}' }}"
+      register: images
+      changed_when: false
+
+    - name: Print images
+      ansible.builtin.debug:
+        var: images.stdout_lines

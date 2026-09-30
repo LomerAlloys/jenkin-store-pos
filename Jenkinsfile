@@ -393,15 +393,10 @@ pipeline {
                         env.PREV_COLOR = current
                         env.NEXT_COLOR = next
 
-                                                // Break the deploy if the commit message contains [break-deploy]
-                        // (or if the optional BREAK_DEPLOY parameter is ticked)
-                        def commitMsg = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
-                        def breakIt = commitMsg.contains('[break-deploy]') || (params.BREAK_DEPLOY == true)
-
-                        def deployImage = breakIt
+                        def deployImage = params.BREAK_DEPLOY
                             ? "${env.REGISTRY}/${env.IMAGE_NAME}:broken"
                             : env.IMAGE_REF
-                        echo "Commit: '${commitMsg}' → breakIt=${breakIt}"
+                        echo "Live = ${current}. Deploying ${deployImage} to idle color ${next}"
 
                         sh 'kubectl get svc taskflow -o yaml > svc-before.yaml'
 
@@ -541,3 +536,5 @@ pipeline {
         // ให้ใช้ stage-level post { always } แทน
     }
 }
+
+

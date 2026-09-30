@@ -1,0 +1,265 @@
+// Lab 08 — Infrastructure as Code pipeline (job: taskflow-infra, Script Path: infra/Jenkinsfile)
+pipeline {
+
+    agent {
+        docker {
+            image 'node:22'
+            label 'linux-build'
+            // iac-tools     : cached terraform/tfsec/docker binaries + Python venv (checkov, ansible)
+            // tf-plugin-cache: AWS provider is ~100 MB, download it once
+            args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock -v iac-tools:/opt/iac -v tf-plugin-cache:/root/.terraform.d/plugin-cache'
+        }
+    }
+
+    parameters {
+        choice(name: 'ACTION', choices: ['apply', 'destroy'],
+               description: 'apply = create/update the environment, destroy = tear it down (Task 6)')
+        string(name: 'IMAGE_TAG', defaultValue: 'bootstrap',
+               description: 'taskflow-api tag in kind-registry to pull on the host (e.g. the sha7 of a green Lab 07 build)')
+    }
+
+    environment {
+        PATH = '/opt/iac/bin:/opt/iac/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+        TF_VER           = '1.15.8'
+        TFSEC_VER        = '1.28.14'
+        CHECKOV_VER      = '3.3.20'
+        ANSIBLE_CORE_VER = '2.19.13'
+        ANSIBLE_LINT_VER = '26.9.0'
+        DOCKER_VER       = '27.3.1'
+
+        TF_DIR              = 'infra/terraform'
+        TF_IN_AUTOMATION    = '1'
+        TF_INPUT            = '0'
+        TF_PLUGIN_CACHE_DIR = '/root/.terraform.d/plugin-cache'
+
+        // LocalStack accepts any credentials. These are NOT real AWS keys.
+        AWS_ACCESS_KEY_ID     = 'test'
+        AWS_SECRET_ACCESS_KEY = 'test'
+        AWS_DEFAULT_REGION    = 'us-east-1'
+
+        // Hosts are recreated on every apply, so their SSH host keys always change
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+
+        // Jenkins user IDs allowed to approve apply/destroy (comma-separated)
+        APPROVERS = 'admin'
+    }
+
+    options {
+        timeout(time: 60, unit: 'MINUTES')
+        disableConcurrentBuilds()   // two applies against one state = trouble
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+
+        stage('Setup IaC Tools') {
+            steps {
+                sh '''
+                    mkdir -p /opt/iac/bin "$TF_PLUGIN_CACHE_DIR"
+                    apt-get update -qq && apt-get install -y -qq unzip python3-venv >/dev/null
+
+                    # Terraform — pinned + checksum-verified
+                    if ! terraform version 2>/dev/null | grep -q "v${TF_VER}"; then
+                        cd /tmp
+                        curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip"
+                        curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_SHA256SUMS"
+                        grep " terraform_${TF_VER}_linux_amd64.zip\$" "terraform_${TF_VER}_SHA256SUMS" | sha256sum -c -
+                        unzip -o -q "terraform_${TF_VER}_linux_amd64.zip" terraform -d /opt/iac/bin
+                        cd - >/dev/null
+                    fi
+
+                    # tfsec — pinned + checksum-verified
+                    if ! tfsec --version 2>/dev/null | grep -q "v${TFSEC_VER}"; then
+                        cd /tmp
+                        curl -fsSLO "https://github.com/aquasecurity/tfsec/releases/download/v${TFSEC_VER}/tfsec_${TFSEC_VER}_linux_amd64.tar.gz"
+                        curl -fsSLO "https://github.com/aquasecurity/tfsec/releases/download/v${TFSEC_VER}/tfsec_${TFSEC_VER}_checksums.txt"
+                        grep " tfsec_${TFSEC_VER}_linux_amd64.tar.gz\$" "tfsec_${TFSEC_VER}_checksums.txt" | sha256sum -c -
+                        tar -xzf "tfsec_${TFSEC_VER}_linux_amd64.tar.gz" -C /opt/iac/bin tfsec
+                        cd - >/dev/null
+                    fi
+
+                    # checkov + ansible-core + ansible-lint in one venv (rebuilt only when versions change)
+                    if ! checkov --version 2>/dev/null | grep -qx "${CHECKOV_VER}" \
+                       || ! ansible-lint --version 2>/dev/null | grep -q "ansible-lint ${ANSIBLE_LINT_VER} using ansible-core:${ANSIBLE_CORE_VER}"; then
+                        rm -rf /opt/iac/venv
+                        python3 -m venv /opt/iac/venv
+                        /opt/iac/venv/bin/pip install -q --upgrade pip
+                        /opt/iac/venv/bin/pip install -q "checkov==${CHECKOV_VER}" \
+                            "ansible-core==${ANSIBLE_CORE_VER}" "ansible-lint==${ANSIBLE_LINT_VER}"
+                    fi
+
+                    # Docker CLI — only used to find the LocalStack instance container on jenkins-net
+                    if ! command -v docker >/dev/null 2>&1; then
+                        curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VER}.tgz" \
+                        | tar -xz --strip-components=1 -C /opt/iac/bin docker/docker
+                    fi
+
+                    terraform version
+                    tfsec --version 2>/dev/null | tail -1
+                    checkov --version
+                    ansible --version | head -1
+                    ansible-lint --version
+                '''
+            }
+        }
+
+        // ---------------- Task 2 ----------------
+        stage('IaC Lint & Validate') {
+            parallel {
+                stage('Terraform Validate') {
+                    steps {
+                        dir('infra/terraform') {
+                            sh 'terraform init -backend=false'
+                            sh 'terraform validate'
+                            sh 'terraform fmt -check -recursive -diff'
+                        }
+                    }
+                }
+                stage('Ansible Lint') {
+                    steps { sh 'ansible-lint infra/ansible/playbook.yml' }
+                }
+            }
+        }
+
+        // ---------------- Task 3 ----------------
+        stage('IaC Security Scan') {
+            parallel {
+                stage('tfsec') {
+                    steps {
+                        sh '''
+                            # Full human-readable report (all severities) — the before/after evidence
+                            tfsec "$TF_DIR" --no-color --concise-output > tfsec-report.txt 2>&1 || true
+                            cat tfsec-report.txt
+                            # The gate: fail on HIGH or CRITICAL, SARIF for the record
+                            tfsec "$TF_DIR" --no-color --minimum-severity HIGH --format sarif --out tfsec-results.sarif
+                        '''
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'tfsec-report.txt, tfsec-results.sarif', allowEmptyArchive: true
+                        }
+                    }
+                }
+                stage('Checkov') {
+                    steps {
+                        sh '''
+                            checkov -d "$TF_DIR" --framework terraform --compact --skip-download > checkov-report.txt 2>&1 || true
+                            cat checkov-report.txt
+                            # The gate: any failed check fails the stage
+                            checkov -d "$TF_DIR" --framework terraform --quiet --skip-download -o junitxml > checkov-results.xml
+                        '''
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'checkov-results.xml'
+                            archiveArtifacts artifacts: 'checkov-report.txt, checkov-results.xml', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---------------- Task 4 ----------------
+        stage('Terraform Plan') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'lab08-ssh-key', keyFileVariable: 'SSH_KEY')]) {
+                    sh '''
+                        # Public key is derived from the private key credential, never stored in git
+                        export TF_VAR_ssh_public_key="$(ssh-keygen -y -f "$SSH_KEY")"
+                        cd "$TF_DIR"
+                        terraform init -reconfigure -backend-config=backend.hcl
+                        if [ "${ACTION:-apply}" = "destroy" ]; then
+                            terraform plan -destroy -out=tfplan
+                        else
+                            terraform plan -out=tfplan
+                        fi
+                        terraform show -no-color tfplan > tfplan.txt
+                    '''
+                }
+                script {
+                    env.PLAN_SUMMARY = sh(
+                        script: "grep -E '# .* (will|must) be|^Plan:|^No changes' ${env.TF_DIR}/tfplan.txt || true",
+                        returnStdout: true
+                    ).trim()
+                    echo "Plan summary:\n${env.PLAN_SUMMARY}"
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'infra/terraform/tfplan, infra/terraform/tfplan.txt, infra/terraform/.terraform.lock.hcl', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Approval') {
+            steps {
+                script {
+                    timeout(time: 30, unit: 'MINUTES') {
+                        env.APPROVER = input(
+                            message: "Terraform ${params.ACTION.toUpperCase()} — review the plan:\n\n${env.PLAN_SUMMARY}\n\nFull plan: tfplan.txt in this build's artifacts.",
+                            ok: "Yes, ${params.ACTION}",
+                            submitter: env.APPROVERS,
+                            submitterParameter: 'APPROVER'
+                        )
+                    }
+                    echo "✅ ${params.ACTION} approved by ${env.APPROVER}"
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                sh '''
+                    cd "$TF_DIR"
+                    # Applying a saved plan never prompts and applies EXACTLY what was approved.
+                    # If state changed since the plan, Terraform refuses ("Saved plan is stale").
+                    terraform apply tfplan
+                    if [ "${ACTION:-apply}" = "destroy" ]; then
+                        terraform state list > ../../state-after-destroy.txt
+                        echo "Resources left in state: $(wc -l < ../../state-after-destroy.txt)"
+                        test ! -s ../../state-after-destroy.txt
+                    else
+                        terraform output
+                        terraform output -json > ../../tf-outputs.json
+                    fi
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'tf-outputs.json, state-after-destroy.txt', allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ---------------- Task 5 ----------------
+        stage('Configure with Ansible') {
+            when { expression { params.ACTION == 'apply' } }
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'lab08-ssh-key',
+                                                   keyFileVariable: 'SSH_KEY',
+                                                   usernameVariable: 'SSH_USER')]) {
+                    sh '''
+                        bash infra/ansible/inventory-from-tf.sh "$TF_DIR" infra/ansible/inventory.ini
+                        ansible-playbook -i infra/ansible/inventory.ini \
+                            -u "$SSH_USER" --private-key "$SSH_KEY" \
+                            -e "image_tag=${IMAGE_TAG:-bootstrap}" \
+                            infra/ansible/playbook.yml > ansible-run.log 2>&1 || RC=$?
+                        cat ansible-run.log
+                        exit ${RC:-0}
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'ansible-run.log, infra/ansible/inventory.ini', allowEmptyArchive: true
+                }
+            }
+        }
+    }
+
+    post {
+        success { echo "✓ taskflow-infra ${params.ACTION} finished" }
+        failure { echo '✗ taskflow-infra failed — check the stage logs above' }
+    }
+}

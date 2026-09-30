@@ -65,3 +65,16 @@ app.*.map.json
 /server/*.tsbuildinfo
 /server/test/k6/k6-env.json
 /.tmp-nginx/
+
+# ---- Terraform (Lab 08) ----
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+tfplan
+tfplan.txt
+crash.log
+crash.*.log
+# ---- Ansible (Lab 08) ----
+infra/ansible/inventory.ini
+*.retry
