@@ -1,8 +1,16 @@
 pipeline {
-    // ให้ Jenkins อยู่บน linux-build โดยตรง แล้วค่อยสร้าง Docker agent แยกตาม stage
-    // เพื่อให้คำสั่ง docker ถูกเรียกจาก jenkins-agent ที่มี Docker CLI อยู่แล้ว
+
     agent {
-        label 'linux-build'
+        docker {
+            // node:22 (Debian bookworm) ใช้ glibc ซึ่ง sonar-scanner JRE ต้องการ
+            // node:22-alpine ใช้ musl libc → sonar-scanner bundled JRE รันไม่ได้ ("java: not found")
+            image 'node:22'
+            label 'linux-build'
+            // -u root: รันเป็น root เพื่อให้ corepack/pnpm ทำงานได้
+            // --network jenkins-net: ให้ container เข้าถึง sonarqube:9000 ผ่าน Docker network ได้
+            // -v docker.sock: DooD สำหรับ E2E stage (docker compose up api-1)
+            args '-u root --network jenkins-net -v /var/run/docker.sock:/var/run/docker.sock'
+        }
     }
 
     // กำหนดค่า Environment Variables สำหรับใช้ทั้ง Pipeline
@@ -22,14 +30,6 @@ pipeline {
 
     stages {
         stage('Install') {
-            agent {
-                docker {
-                    image 'node:22'
-                    label 'linux-build'
-                    reuseNode true
-                    args '-u root --network jenkins-net'
-                }
-            }
             steps {
                 dir('server') {
                     echo "=== Installing Dependencies for ${env.APP_NAME} (${env.NODE_ENV}) ==="
@@ -42,14 +42,6 @@ pipeline {
         }
 
         stage('Lint') {
-            agent {
-                docker {
-                    image 'node:22'
-                    label 'linux-build'
-                    reuseNode true
-                    args '-u root --network jenkins-net'
-                }
-            }
             steps {
                 dir('server') {
                     echo "=== Running Linter for ${env.APP_NAME} ==="
@@ -66,14 +58,6 @@ pipeline {
         }
 
         stage('Unit Test') {
-            agent {
-                docker {
-                    image 'node:22'
-                    label 'linux-build'
-                    reuseNode true
-                    args '-u root --network jenkins-net'
-                }
-            }
             steps {
                 dir('server') {
                     echo "=== Running Unit Tests for ${env.APP_NAME} ==="
@@ -90,15 +74,7 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
-            agent {
-                docker {
-                    // Debian/glibc is required by sonar-scanner's bundled JRE.
-                    image 'node:22'
-                    label 'linux-build'
-                    reuseNode true
-                    args '-u root --network jenkins-net'
-                }
-            }
+
             steps {
                 withSonarQubeEnv('SonarQube') {
                     // รัน sonar-scanner ผ่าน npx
